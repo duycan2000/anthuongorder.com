@@ -97,9 +97,11 @@ h2{font-size:13px;letter-spacing:1.2px;text-transform:uppercase;color:var(--mut)
 @media (min-width:600px){.top{padding-top:30px}.cust{font-size:28px}}
 `;
 
-export function renderPublicQuote({ order, items, settings, url }) {
+export function renderPublicQuote({ order, items, settings, url, returns = [] }) {
   const shop = settings.shop || {};
   const active = items.filter((i) => !['cancelled', 'returned'].includes(i.status));
+  const counted = items.filter((i) => i.status !== 'cancelled');
+  const refunded = returns.reduce((a, r) => a + r.refund_amount, 0);
   let stage = active.length ? Math.min(...active.map((i) => Math.max(0, STAGES.indexOf(i.status)))) : 0;
   if (stage === 0 && order.payment_status !== 'unpaid') stage = 1;
   const arrived = active.filter((i) => ['arrived', 'received'].includes(i.status)).length;
@@ -130,7 +132,7 @@ export function renderPublicQuote({ order, items, settings, url }) {
   }).join('');
 
   const feeFormula = (() => {
-    const fees = active.map((i) => i.fee);
+    const fees = counted.map((i) => i.fee);
     if (!fees.length) return '';
     const groups = {};
     for (const f of fees) groups[f] = (groups[f] || 0) + 1;
@@ -167,11 +169,13 @@ export function renderPublicQuote({ order, items, settings, url }) {
 
   <section class="card">
     <div class="tot">
-      <div class="r"><span>Products (${active.length} item${active.length === 1 ? '' : 's'})</span><span>${money(order.products_total)} ₫</span></div>
+      <div class="r"><span>Products (${counted.length} item${counted.length === 1 ? '' : 's'})</span><span>${money(order.products_total)} ₫</span></div>
       <div class="r"><span>Shipping</span><span>${order.shipping_total ? money(order.shipping_total) + ' ₫' : 'Free'}</span></div>
       <div class="r"><span>Service fee ${feeFormula ? `<em>(${esc(feeFormula)})</em>` : ''}</span><span>${money(order.fee_total)} ₫</span></div>
     </div>
     <div class="grand"><span>TOTAL</span><b>${money(order.grand_total)} ₫</b></div>
+    ${refunded ? `<div class="tot"><div class="r"><span>Refunded to you (${returns.length} return${returns.length > 1 ? 's' : ''})</span><span>−${money(refunded)} ₫</span></div>
+      <div class="r" style="font-weight:700"><span>Net</span><span>${money(order.grand_total - refunded)} ₫</span></div></div>` : ''}
   </section>
 
   <h2>How to pay</h2>

@@ -108,6 +108,30 @@ export const SCHEMA = [
     user_id INTEGER,
     created_at TEXT NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS returns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id INTEGER NOT NULL,
+    item_id INTEGER NOT NULL,
+    prev_status TEXT,
+    return_fee INTEGER NOT NULL DEFAULT 0,
+    refund_amount INTEGER NOT NULL DEFAULT 0,
+    refund_method TEXT NOT NULL DEFAULT 'cash',
+    platform_refund INTEGER NOT NULL DEFAULT 0,
+    refunded_at TEXT NOT NULL,
+    note TEXT,
+    user_id INTEGER,
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS cash_closings (
+    date TEXT PRIMARY KEY,
+    expected INTEGER NOT NULL DEFAULT 0,
+    counted INTEGER NOT NULL DEFAULT 0,
+    note TEXT,
+    user_id INTEGER,
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_returns_order ON returns(order_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_payments_date ON payments(received_at)`,
   `CREATE INDEX IF NOT EXISTS idx_items_order ON items(order_id)`,
   `CREATE INDEX IF NOT EXISTS idx_payments_order ON payments(order_id)`,
   `CREATE INDEX IF NOT EXISTS idx_purchases_date ON purchases(purchased_at)`,
@@ -126,15 +150,16 @@ export const MIGRATIONS = [
   `ALTER TABLE items ADD COLUMN variation2 TEXT`,
 ];
 // bump when SCHEMA or MIGRATIONS change, so the schema check is skipped on normal requests
-export const SCHEMA_VERSION = '4';
+export const SCHEMA_VERSION = '5';
 
 export const DEFAULT_SETTINGS = {
   fees: {
-    shopee: { first: 25000, add: 15000, ship: 0 },
-    lazada: { first: 35000, add: 15000, ship: 0 },
-    tiki: { first: 35000, add: 15000, ship: 0 },
-    other: { first: 35000, add: 15000, ship: 0 },
+    shopee: { first: 25000, add: 15000, ship: 0, ret: 15000 },
+    lazada: { first: 35000, add: 15000, ship: 0, ret: 15000 },
+    tiki: { first: 35000, add: 15000, ship: 0, ret: 15000 },
+    other: { first: 35000, add: 15000, ship: 0, ret: 15000 },
   },
+  reminders: { unpaid_days: 2, order_days: 7, pickup_days: 3 },
   shop: {
     name: 'AN THUONG ORDER',
     tagline: 'Your local shopping assistant · Linz Coffee, 42 An Thuong 2',

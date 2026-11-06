@@ -1,9 +1,9 @@
 // An Thuong Order — internal app on Cloudflare Workers + D1.
 import { SCHEMA, MIGRATIONS, SCHEMA_VERSION, DEFAULT_SETTINGS } from './schema.js';
-import { DEMO_COUNT, planDemoCustomer } from './demo.js';
+import { DEMO_COUNT, planDemoCustomer, shiftDate } from './demo.js';
 import { renderPublicQuote, renderNotFound } from './public-quote.js';
 
-export const APP_VERSION = '0.3.2';
+export const APP_VERSION = '0.4.0';
 
 const PERMS = ['quotes', 'orders', 'settings', 'users'];
 const STATUSES = ['quoted', 'paid', 'ordered', 'arrived', 'received', 'cancelled', 'returned'];
@@ -138,6 +138,7 @@ async function getSettings(env) {
       if (r.key === 'fees') {
         for (const p of Object.keys(out.fees)) if (v[p]) out.fees[p] = { ...out.fees[p], ...v[p] };
       } else if (r.key === 'shop') out.shop = { ...out.shop, ...v };
+      else if (r.key === 'reminders') out.reminders = { ...out.reminders, ...v };
     } catch (_) { /* ignore corrupt value */ }
   }
   return out;
@@ -259,6 +260,13 @@ async function handleApi(request, env, url) {
     if (seg.length === 2 && method === 'PUT') return updateCustomer(request, env, int(seg[1]));
   }
 
+  // dashboard, reports, cash
+  if (path === '/api/today' && method === 'GET') { needAny(user, ['quotes', 'orders']); return todayBoard(env); }
+  if (path === '/api/reports' && method === 'GET') { need(user, 'orders'); return reports(env, url); }
+  if (path === '/api/cash' && method === 'GET') { need(user, 'orders'); return cashDay(env, url); }
+  if (path === '/api/cash' && method === 'POST') { need(user, 'orders'); return saveCash(request, env, user); }
+  if (seg[0] === 'returns' && seg.length === 2 && method === 'DELETE') { need(user, 'orders'); return deleteReturn(env, user, int(seg[1])); }
+
   // demo data (admin)
   if (seg[0] === 'demo') {
     need(user, 'users');
@@ -295,6 +303,7 @@ async function handleApi(request, env, url) {
     if (seg.length === 1 && method === 'GET') return listItems(env, url);
     if (seg.length === 2 && seg[1] === 'status' && method === 'POST') return bulkStatus(request, env, user);
     if (seg.length === 2 && method === 'PUT') return updateItem(request, env, user, int(seg[1]));
+    if (seg.length === 3 && seg[2] === 'return' && method === 'POST') return createReturn(request, env, user, int(seg[1]));
   }
 
   throw new HttpError(404, 'Không tìm thấy');
@@ -321,13 +330,18 @@ async function saveSettings(request, env) {
   const fees = {};
   for (const p of Object.keys(cur.fees)) {
     const f = (body.fees && body.fees[p]) || cur.fees[p];
-    fees[p] = { first: Math.max(0, int(f.first)), add: Math.max(0, int(f.add)), ship: Math.max(0, int(f.ship)) };
+    fees[p] = { first: Math.max(0, int(f.first)), add: Math.max(0, int(f.add)), ship: Math.max(0, int(f.ship)), ret: Math.max(0, int(f.ret != null ? f.ret : cur.fees[p].ret)) };
   }
   const shop = {};
   for (const k of Object.keys(cur.shop)) shop[k] = str(body.shop && body.shop[k] != null ? body.shop[k] : cur.shop[k], 600);
   await env.DB.batch([
     env.DB.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').bind('fees', JSON.stringify(fees)),
     env.DB.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').bind('shop', JSON.stringify(shop)),
+    env.DB.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').bind('reminders', JSON.stringify({
+      unpaid_days: Math.max(1, int((body.reminders || cur.reminders).unpaid_days, 2)),
+      order_days: Math.max(1, int((body.reminders || cur.reminders).order_days, 7)),
+      pickup_days: Math.max(1, int((body.reminders || cur.reminders).pickup_days, 3)),
+    })),
   ]);
   return json(await getSettings(env));
 }
@@ -419,9 +433,11 @@ async function getCustomer(env, id) {
       (SELECT COUNT(*) FROM items i WHERE i.order_id = o.id) AS item_count,
       (SELECT GROUP_CONCAT(status) FROM items i WHERE i.order_id = o.id) AS statuses,
       (SELECT COALESCE(SUM(amount),0) FROM payments p WHERE p.order_id = o.id) AS received,
-      (SELECT COALESCE(SUM(cost),0) FROM items i WHERE i.order_id = o.id AND i.status NOT IN ('cancelled','returned')) AS cost_total,
-      (SELECT COUNT(*) FROM items i WHERE i.order_id = o.id AND i.status NOT IN ('cancelled','returned')) AS active_count,
-      (SELECT COUNT(*) FROM items i WHERE i.order_id = o.id AND i.status NOT IN ('cancelled','returned') AND i.cost IS NOT NULL) AS costed_count
+      (SELECT COALESCE(SUM(cost),0) FROM items i WHERE i.order_id = o.id AND i.status <> 'cancelled') AS cost_total,
+      (SELECT COUNT(*) FROM items i WHERE i.order_id = o.id AND i.status <> 'cancelled') AS active_count,
+      (SELECT COUNT(*) FROM items i WHERE i.order_id = o.id AND i.status <> 'cancelled' AND i.cost IS NOT NULL) AS costed_count,
+      (SELECT COALESCE(SUM(refund_amount),0) FROM returns r WHERE r.order_id = o.id) AS refunded,
+      (SELECT COALESCE(SUM(platform_refund),0) FROM returns r WHERE r.order_id = o.id) AS platform_refunded
      FROM orders o WHERE o.customer_id = ? ORDER BY o.order_date DESC, o.id DESC`
   ).bind(id).all()).results || [];
   return json({ customer: c, orders });
@@ -457,6 +473,158 @@ async function updateCustomer(request, env, id) {
     if (its.length) await env.DB.batch(its.map((it) => env.DB.prepare('UPDATE items SET search = ? WHERE id = ?').bind(itemSearch(it, name, phone, it.code), it.id)));
   }
   return getCustomer(env, id);
+}
+
+// ---------- returns / refunds ----------
+async function createReturn(request, env, user, itemId) {
+  const b = await readJson(request);
+  const it = await env.DB.prepare('SELECT * FROM items WHERE id = ?').bind(itemId).first();
+  if (!it) throw new HttpError(404, 'Không tìm thấy món');
+  if (['cancelled', 'returned'].includes(it.status)) throw bad('Món này đã huỷ hoặc đã trả');
+  const now = nowIso();
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(b.refunded_at || '') ? b.refunded_at : todayVN();
+  const method = ['cash', 'wise', 'bank'].includes(b.refund_method) ? b.refund_method : 'cash';
+  await env.DB.batch([
+    env.DB.prepare(`INSERT INTO returns (order_id, item_id, prev_status, return_fee, refund_amount, refund_method, platform_refund, refunded_at, note, user_id, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`).bind(it.order_id, it.id, it.status, Math.max(0, int(b.return_fee)), Math.max(0, int(b.refund_amount)), method,
+      Math.max(0, int(b.platform_refund)), date, str(b.note, 300), user.id, now),
+    env.DB.prepare("UPDATE items SET status = 'returned', status_at = ? WHERE id = ?").bind(now, it.id),
+    env.DB.prepare('INSERT INTO status_log (item_id, from_status, to_status, user_id, at) VALUES (?, ?, ?, ?, ?)').bind(it.id, it.status, 'returned', user.id, now),
+  ]);
+  return json(await loadOrder(env, it.order_id), 201);
+}
+async function deleteReturn(env, user, id) {
+  const r = await env.DB.prepare('SELECT * FROM returns WHERE id = ?').bind(id).first();
+  if (!r) throw new HttpError(404, 'Không tìm thấy');
+  const to = r.prev_status && r.prev_status !== 'returned' ? r.prev_status : 'received';
+  const now = nowIso();
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM returns WHERE id = ?').bind(id),
+    env.DB.prepare("UPDATE items SET status = ?, status_at = ? WHERE id = ? AND status = 'returned'").bind(to, now, r.item_id),
+    env.DB.prepare('INSERT INTO status_log (item_id, from_status, to_status, user_id, at) VALUES (?, ?, ?, ?, ?)').bind(r.item_id, 'returned', to, user.id, now),
+  ]);
+  return json(await loadOrder(env, r.order_id));
+}
+
+// ---------- today board ----------
+async function todayBoard(env) {
+  const s = await getSettings(env);
+  const rm = s.reminders;
+  const t = todayVN();
+  const unpaid = (await env.DB.prepare(
+    `SELECT o.id, o.code, o.public_id, o.customer_name, o.customer_phone, o.order_date, o.grand_total,
+       (SELECT COUNT(*) FROM items i WHERE i.order_id = o.id AND i.status <> 'cancelled') AS n
+     FROM orders o WHERE o.payment_status = 'unpaid' AND o.order_date <= ?
+       AND EXISTS (SELECT 1 FROM items i WHERE i.order_id = o.id AND i.status = 'quoted')
+     ORDER BY o.order_date LIMIT 100`
+  ).bind(shiftDate(t, -rm.unpaid_days)).all()).results || [];
+  const toOrder = (await env.DB.prepare(
+    `SELECT o.id, o.code, o.customer_name, o.order_date, COUNT(*) AS n, SUM(i.price + i.shipping) AS value, MIN(i.status_at) AS since,
+       (SELECT COUNT(*) FROM items x WHERE x.order_id = o.id AND x.status <> 'cancelled') AS total
+     FROM items i JOIN orders o ON o.id = i.order_id WHERE i.status = 'paid'
+     GROUP BY o.id ORDER BY since LIMIT 100`
+  ).all()).results || [];
+  const late = (await env.DB.prepare(
+    `SELECT i.id, i.order_id, i.name, i.name_vi, i.variation, i.variation2, i.platform, i.platform_order_id, i.status_at, o.code, o.customer_name, p.code AS purchase_code
+     FROM items i JOIN orders o ON o.id = i.order_id LEFT JOIN purchases p ON p.id = i.purchase_id
+     WHERE i.status = 'ordered' AND substr(i.status_at, 1, 10) <= ? ORDER BY i.status_at LIMIT 200`
+  ).bind(shiftDate(t, -rm.order_days)).all()).results || [];
+  const pickup = (await env.DB.prepare(
+    `SELECT o.id, o.code, o.public_id, o.customer_name, o.customer_phone, COUNT(*) AS n, MIN(i.status_at) AS since,
+       GROUP_CONCAT(NULLIF(i.shelf, '')) AS shelves, GROUP_CONCAT(i.id) AS ids,
+       (SELECT COUNT(*) FROM items x WHERE x.order_id = o.id AND x.status NOT IN ('cancelled','returned')) AS total,
+       (SELECT COUNT(*) FROM items x WHERE x.order_id = o.id AND x.status IN ('arrived','received')) AS here
+     FROM items i JOIN orders o ON o.id = i.order_id WHERE i.status = 'arrived'
+     GROUP BY o.id HAVING substr(MIN(i.status_at), 1, 10) <= ? ORDER BY since LIMIT 100`
+  ).bind(shiftDate(t, -rm.pickup_days)).all()).results || [];
+  const atCafe = await env.DB.prepare("SELECT COUNT(*) AS n, COUNT(DISTINCT order_id) AS o FROM items WHERE status = 'arrived'").first();
+  const stats = {
+    quotes: (await env.DB.prepare('SELECT COUNT(*) AS n, COALESCE(SUM(grand_total),0) AS v FROM orders WHERE order_date = ?').bind(t).first()),
+    received: (await env.DB.prepare('SELECT COUNT(*) AS n, COALESCE(SUM(amount),0) AS v FROM payments WHERE received_at = ?').bind(t).first()),
+    purchases: (await env.DB.prepare('SELECT COUNT(*) AS n, COALESCE(SUM(paid_amount),0) AS v, COALESCE(SUM(quoted_amount - paid_amount),0) AS saved FROM purchases WHERE purchased_at = ?').bind(t).first()),
+    at_cafe: atCafe,
+  };
+  return json({ today: t, reminders: rm, unpaid, to_order: toOrder, late, pickup, stats });
+}
+
+// ---------- reports ----------
+async function reports(env, url) {
+  const months = Math.max(1, Math.min(24, int(url.searchParams.get('months'), 12)));
+  const t = todayVN();
+  const list = [];
+  for (let i = months - 1; i >= 0; i--) {
+    const d = new Date(Date.UTC(+t.slice(0, 4), +t.slice(5, 7) - 1 - i, 1));
+    list.push(d.toISOString().slice(0, 7));
+  }
+  const from = list[0] + '-01';
+  const byMonth = (rows) => Object.fromEntries((rows.results || []).map((r) => [r.m, r]));
+  const orders = byMonth(await env.DB.prepare(
+    `SELECT substr(order_date,1,7) AS m, COUNT(*) AS orders, COUNT(DISTINCT customer_id) AS customers, COALESCE(SUM(grand_total),0) AS grand, COALESCE(SUM(fee_total),0) AS fee
+     FROM orders WHERE order_date >= ? GROUP BY m`).bind(from).all());
+  const items = byMonth(await env.DB.prepare(
+    `SELECT substr(o.order_date,1,7) AS m, COUNT(*) AS items, COALESCE(SUM(i.cost),0) AS cost,
+       COALESCE(SUM(i.fee),0) AS fee_done, COALESCE(SUM(i.price + i.shipping - i.cost),0) AS voucher
+     FROM items i JOIN orders o ON o.id = i.order_id
+     WHERE o.order_date >= ? AND i.status <> 'cancelled' AND i.cost IS NOT NULL GROUP BY m`).bind(from).all());
+  const rets = byMonth(await env.DB.prepare(
+    `SELECT substr(o.order_date,1,7) AS m, COUNT(*) AS returns, COALESCE(SUM(r.refund_amount),0) AS refunds, COALESCE(SUM(r.platform_refund),0) AS platform_refunds
+     FROM returns r JOIN orders o ON o.id = r.order_id WHERE o.order_date >= ? GROUP BY m`).bind(from).all());
+  const pays = byMonth(await env.DB.prepare(
+    `SELECT substr(received_at,1,7) AS m, COALESCE(SUM(amount),0) AS received,
+       COALESCE(SUM(CASE WHEN method='cash' THEN amount END),0) AS cash, COALESCE(SUM(CASE WHEN method='wise' THEN amount END),0) AS wise,
+       COALESCE(SUM(CASE WHEN method='bank' THEN amount END),0) AS bank
+     FROM payments WHERE received_at >= ? GROUP BY m`).bind(from).all());
+  const buys = byMonth(await env.DB.prepare(
+    `SELECT substr(purchased_at,1,7) AS m, COUNT(*) AS purchases, COALESCE(SUM(paid_amount),0) AS paid, COALESCE(SUM(quoted_amount - paid_amount),0) AS saved,
+       COALESCE(SUM(quoted_amount),0) AS quoted FROM purchases WHERE purchased_at >= ? GROUP BY m`).bind(from).all());
+  const newc = byMonth(await env.DB.prepare(
+    `SELECT m, COUNT(*) AS new_customers FROM (SELECT substr(MIN(order_date),1,7) AS m FROM orders WHERE customer_id IS NOT NULL GROUP BY customer_id) WHERE m >= ? GROUP BY m`).bind(list[0]).all());
+  const rows = list.map((m) => {
+    const o = orders[m] || {}, it = items[m] || {}, r = rets[m] || {}, p = pays[m] || {}, b = buys[m] || {}, n = newc[m] || {};
+    const profit = (it.fee_done || 0) + (it.voucher || 0) - (r.refunds || 0) + (r.platform_refunds || 0);
+    return {
+      month: m, orders: o.orders || 0, customers: o.customers || 0, new_customers: n.new_customers || 0, grand: o.grand || 0, fee: o.fee || 0,
+      items_done: it.items || 0, cost: it.cost || 0, fee_done: it.fee_done || 0, voucher: it.voucher || 0,
+      returns: r.returns || 0, refunds: r.refunds || 0, platform_refunds: r.platform_refunds || 0, profit,
+      received: p.received || 0, cash: p.cash || 0, wise: p.wise || 0, bank: p.bank || 0,
+      purchases: b.purchases || 0, purchase_paid: b.paid || 0, purchase_quoted: b.quoted || 0, saved: b.saved || 0,
+    };
+  });
+  const focus = /^\d{4}-\d{2}$/.test(url.searchParams.get('month') || '') ? url.searchParams.get('month') : list[list.length - 1];
+  const top = (await env.DB.prepare(
+    `SELECT o.customer_id, o.customer_name, COUNT(DISTINCT o.id) AS orders, COALESCE(SUM(i.price + i.shipping + i.fee),0) AS total,
+       COALESCE(SUM(CASE WHEN i.cost IS NOT NULL THEN i.price + i.shipping + i.fee - i.cost END),0) AS profit
+     FROM orders o JOIN items i ON i.order_id = o.id AND i.status <> 'cancelled'
+     WHERE substr(o.order_date,1,7) = ? GROUP BY o.customer_id, o.customer_name ORDER BY total DESC LIMIT 10`).bind(focus).all()).results || [];
+  return json({ months: rows, focus, top });
+}
+
+// ---------- cash closing ----------
+async function cashDay(env, url) {
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(url.searchParams.get('date') || '') ? url.searchParams.get('date') : todayVN();
+  const payments = (await env.DB.prepare(
+    `SELECT p.*, o.code, o.customer_name FROM payments p JOIN orders o ON o.id = p.order_id WHERE p.received_at = ? ORDER BY p.id`).bind(date).all()).results || [];
+  const refunds = (await env.DB.prepare(
+    `SELECT r.*, o.code, o.customer_name, i.name FROM returns r JOIN orders o ON o.id = r.order_id JOIN items i ON i.id = r.item_id WHERE r.refunded_at = ? ORDER BY r.id`).bind(date).all()).results || [];
+  const purchases = (await env.DB.prepare('SELECT * FROM purchases WHERE purchased_at = ? ORDER BY id').bind(date).all()).results || [];
+  const closing = await env.DB.prepare('SELECT * FROM cash_closings WHERE date = ?').bind(date).first();
+  const history = (await env.DB.prepare('SELECT * FROM cash_closings ORDER BY date DESC LIMIT 14').all()).results || [];
+  const sum = (arr, f) => arr.filter(f).reduce((a, x) => a + (x.amount != null ? x.amount : x.refund_amount), 0);
+  const totals = {
+    cash_in: sum(payments, (p) => p.method === 'cash'), wise_in: sum(payments, (p) => p.method === 'wise'), bank_in: sum(payments, (p) => p.method === 'bank'),
+    cash_out: sum(refunds, (r) => r.refund_method === 'cash'), other_out: sum(refunds, (r) => r.refund_method !== 'cash'),
+    purchases: purchases.reduce((a, p) => a + p.paid_amount, 0),
+  };
+  totals.expected_cash = totals.cash_in - totals.cash_out;
+  return json({ date, payments, refunds, purchases, totals, closing, history });
+}
+async function saveCash(request, env, user) {
+  const b = await readJson(request);
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(b.date || '') ? b.date : todayVN();
+  const day = await (await cashDay(env, new URL('http://x/?date=' + date))).json();
+  await env.DB.prepare('INSERT OR REPLACE INTO cash_closings (date, expected, counted, note, user_id, created_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .bind(date, day.totals.expected_cash, Math.max(0, int(b.counted)), str(b.note, 300), user.id, nowIso()).run();
+  return cashDay(env, new URL('http://x/?date=' + date));
 }
 
 // ---------- demo data ----------
@@ -509,6 +677,16 @@ async function createDemo(request, env, user) {
       .bind(orderId, plan.payment.amount, plan.payment.method, plan.payment.received_at, plan.payment.amount > products + shipping + fees ? 'làm tròn' : '', user.id, now));
   }
   await env.DB.batch(stmts);
+  // a few demo returns so refunds show up in reports
+  if ([5, 13, 20].includes(idx) && plan.statusOf[0] === 'received') {
+    const it = await env.DB.prepare('SELECT * FROM items WHERE order_id = ? ORDER BY position LIMIT 1').bind(orderId).first();
+    const ret = (settings.fees[it.platform] || settings.fees.other).ret || 15000;
+    await env.DB.batch([
+      env.DB.prepare(`INSERT INTO returns (order_id, item_id, prev_status, return_fee, refund_amount, refund_method, platform_refund, refunded_at, note, user_id, created_at)
+        VALUES (?, ?, 'received', ?, ?, 'cash', ?, ?, 'demo: sai size', ?, ?)`).bind(orderId, it.id, ret, Math.max(0, it.price + it.shipping - ret), it.cost || 0, shiftDate(plan.statusAt[0], 1) > today ? today : shiftDate(plan.statusAt[0], 1), user.id, now),
+      env.DB.prepare("UPDATE items SET status = 'returned' WHERE id = ?").bind(it.id),
+    ]);
+  }
   return json({ ok: true, index: idx, customer: plan.name, code, items: plan.items.length });
 }
 
@@ -517,6 +695,7 @@ async function deleteDemo(env) {
     env.DB.prepare('DELETE FROM status_log WHERE item_id IN (SELECT i.id FROM items i JOIN orders o ON o.id = i.order_id WHERE o.is_demo = 1)'),
     env.DB.prepare('DELETE FROM items WHERE order_id IN (SELECT id FROM orders WHERE is_demo = 1)'),
     env.DB.prepare('DELETE FROM payments WHERE order_id IN (SELECT id FROM orders WHERE is_demo = 1)'),
+    env.DB.prepare('DELETE FROM returns WHERE order_id IN (SELECT id FROM orders WHERE is_demo = 1)'),
     env.DB.prepare('DELETE FROM orders WHERE is_demo = 1'),
     env.DB.prepare('DELETE FROM purchases WHERE is_demo = 1'),
     env.DB.prepare('DELETE FROM customers WHERE is_demo = 1 AND id NOT IN (SELECT customer_id FROM orders WHERE customer_id IS NOT NULL)'),
@@ -532,6 +711,7 @@ async function loadOrder(env, id) {
     'SELECT i.*, p.code AS purchase_code, p.purchased_at AS purchased_at FROM items i LEFT JOIN purchases p ON p.id = i.purchase_id WHERE i.order_id = ? ORDER BY i.position, i.id'
   ).bind(id).all()).results || [];
   const payments = (await env.DB.prepare('SELECT * FROM payments WHERE order_id = ? ORDER BY received_at, id').bind(id).all()).results || [];
+  order.returns = (await env.DB.prepare('SELECT * FROM returns WHERE order_id = ? ORDER BY refunded_at, id').bind(id).all()).results || [];
   if (order.customer_id) {
     const c = await env.DB.prepare('SELECT note FROM customers WHERE id = ?').bind(order.customer_id).first();
     order.customer_note = c ? c.note || '' : '';
@@ -553,9 +733,11 @@ async function listOrders(env, url) {
       (SELECT COUNT(*) FROM items i WHERE i.order_id = o.id) AS item_count,
       (SELECT GROUP_CONCAT(status) FROM items i WHERE i.order_id = o.id) AS statuses,
       (SELECT COALESCE(SUM(amount),0) FROM payments p WHERE p.order_id = o.id) AS received,
-      (SELECT COALESCE(SUM(cost),0) FROM items i WHERE i.order_id = o.id AND i.status NOT IN ('cancelled','returned')) AS cost_total,
-      (SELECT COUNT(*) FROM items i WHERE i.order_id = o.id AND i.status NOT IN ('cancelled','returned')) AS active_count,
-      (SELECT COUNT(*) FROM items i WHERE i.order_id = o.id AND i.status NOT IN ('cancelled','returned') AND i.cost IS NOT NULL) AS costed_count
+      (SELECT COALESCE(SUM(cost),0) FROM items i WHERE i.order_id = o.id AND i.status <> 'cancelled') AS cost_total,
+      (SELECT COUNT(*) FROM items i WHERE i.order_id = o.id AND i.status <> 'cancelled') AS active_count,
+      (SELECT COUNT(*) FROM items i WHERE i.order_id = o.id AND i.status <> 'cancelled' AND i.cost IS NOT NULL) AS costed_count,
+      (SELECT COALESCE(SUM(refund_amount),0) FROM returns r WHERE r.order_id = o.id) AS refunded,
+      (SELECT COALESCE(SUM(platform_refund),0) FROM returns r WHERE r.order_id = o.id) AS platform_refunded
     FROM orders o ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
     ORDER BY o.order_date DESC, o.id DESC LIMIT 300`;
   const rows = (await env.DB.prepare(sql).bind(...args).all()).results || [];
@@ -650,7 +832,7 @@ async function saveOrder(request, env, user, id) {
   const payment = existing ? existing.payment_status : (PAYMENT.includes(b.payment_status) ? b.payment_status : 'unpaid');
   const customerId = await upsertCustomer(env, int(b.customer_id) || (existing && existing.customer_id), name, phone);
 
-  const active = items.filter((it) => !['cancelled', 'returned'].includes(it.status || ''));
+  const active = items.filter((it) => (it.status || '') !== 'cancelled');
   const products = active.reduce((s, it) => s + it.price, 0);
   const shipping = active.reduce((s, it) => s + it.shipping, 0);
   const fees = active.reduce((s, it) => s + it.fee, 0);
@@ -717,6 +899,7 @@ async function deleteOrder(env, id) {
     env.DB.prepare('DELETE FROM status_log WHERE item_id IN (SELECT id FROM items WHERE order_id = ?)').bind(id),
     env.DB.prepare('DELETE FROM items WHERE order_id = ?').bind(id),
     env.DB.prepare('DELETE FROM payments WHERE order_id = ?').bind(id),
+    env.DB.prepare('DELETE FROM returns WHERE order_id = ?').bind(id),
     env.DB.prepare('DELETE FROM orders WHERE id = ?').bind(id),
   ]);
   return json({ ok: true });
@@ -948,7 +1131,7 @@ async function bulkStatus(request, env, user) {
 async function recomputeTotals(env, orderId) {
   const t = await env.DB.prepare(
     `SELECT COALESCE(SUM(price),0) AS p, COALESCE(SUM(shipping),0) AS s, COALESCE(SUM(fee),0) AS f
-     FROM items WHERE order_id = ? AND status NOT IN ('cancelled','returned')`
+     FROM items WHERE order_id = ? AND status <> 'cancelled'`
   ).bind(orderId).first();
   await env.DB.prepare('UPDATE orders SET products_total=?, shipping_total=?, fee_total=?, grand_total=?, updated_at=? WHERE id=?')
     .bind(t.p, t.s, t.f, t.p + t.s + t.f, nowIso(), orderId).run();
@@ -979,5 +1162,6 @@ async function publicQuote(env, publicId, url) {
   if (!order) return html(renderNotFound(), 404);
   const items = (await env.DB.prepare('SELECT * FROM items WHERE order_id = ? ORDER BY position, id').bind(order.id).all()).results || [];
   const settings = await getSettings(env);
-  return html(renderPublicQuote({ order, items, settings, url: url.href }));
+  const returns = (await env.DB.prepare('SELECT * FROM returns WHERE order_id = ?').bind(order.id).all()).results || [];
+  return html(renderPublicQuote({ order, items, settings, url: url.href, returns }));
 }

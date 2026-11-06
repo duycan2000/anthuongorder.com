@@ -229,6 +229,29 @@ table.t tr.sel td{background:var(--gll)}
 .more a svg{width:20px;height:20px;color:var(--g)}
 .more a b{margin-left:auto;color:var(--mut);font-size:18px}
 
+/* today */
+.tgrid{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.tsec{padding:14px 16px;border-top:4px solid var(--line)}
+.tsec.warn{border-top-color:#E5A93B} .tsec.info{border-top-color:var(--info)} .tsec.bad{border-top-color:var(--red)} .tsec.ok{border-top-color:var(--vio)}
+.tsec h3{font-size:15px;display:flex;align-items:center;gap:8px}
+.tsec-h{margin-bottom:8px}
+.cnt{display:inline-flex;min-width:22px;height:22px;border-radius:11px;background:var(--line2);color:var(--mut);font-size:12px;align-items:center;justify-content:center;padding:0 7px}
+.cnt.on{background:var(--ink);color:#fff}
+.tdone{color:var(--ok);font-weight:600;padding:10px 0}
+.tsec table.t td{padding:8px 6px}
+/* reports */
+.chart-wrap{position:relative;margin:10px 0 6px}
+.chart{width:100%;height:auto;display:block;overflow:visible}
+.chart .ax{font-size:11px;fill:var(--mut);font-family:inherit}
+.chart .vl{font-size:12px;font-weight:700;fill:var(--ink);font-family:inherit}
+.chart.narrow .ax{font-size:13px}
+.chart.narrow .vl{font-size:14px}
+.chart .bar-g.hov rect:first-child{fill:rgba(46,94,78,.06)}
+.tip{position:absolute;top:0;width:190px;background:#17211D;color:#fff;border-radius:10px;padding:8px 10px;font-size:12px;pointer-events:none;box-shadow:0 8px 24px rgba(0,0,0,.25)}
+.tip i,.legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+.legend{display:flex;gap:14px;font-size:12.5px;color:var(--ink2)}
+.mix{display:flex;height:12px;border-radius:6px;overflow:hidden;gap:2px;margin:6px 0 10px}
+
 /* ---------- responsive ---------- */
 @media (max-width:1180px){
   .qe{grid-template-columns:minmax(0,1fr) 280px}
@@ -264,6 +287,7 @@ table.t tr.sel td{background:var(--gll)}
   .row-it .r3 .idx{display:none}
   .qe-bottom{grid-template-columns:1fr}
   .money-grid{grid-template-columns:1fr}
+  .tgrid{grid-template-columns:1fr}
   .cu{grid-template-columns:1fr}
   .cu-detail{position:static}
   .pq{grid-template-columns:1fr}

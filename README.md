@@ -2,7 +2,7 @@
 
 App nội bộ cho **An Thuong Order @ Linz Coffee**. Chạy trên **Cloudflare Workers + D1**, không cần build, không có dependency.
 
-**Phiên bản:** 0.3.2 (hiện ở màn đăng nhập)
+**Phiên bản:** 0.4.0 (hiện ở màn đăng nhập)
 
 ## Tính năng bản 0.1.0
 - Đăng nhập bằng username/mật khẩu (PBKDF2, khoá 15 phút sau 5 lần sai), phiên 30 ngày.
@@ -15,6 +15,10 @@ App nội bộ cho **An Thuong Order @ Linz Coffee**. Chạy trên **Cloudflare 
 - **Đơn hàng** theo tháng, **Cài đặt** phí & thông tin in trên ảnh.
 - **Tiền khách trả** (tiền mặt / Wise / chuyển khoản), **Đặt hàng** theo lượt (mỗi lượt 1 khách, chia tiền thực trả theo tỉ lệ giá báo), **lãi lỗ** theo đơn, khách, tháng.
 - **Khách hàng**: số điện thoại, ghi chú nội bộ (hiện khi tạo báo giá), lịch sử đơn, tổng mua, lãi.
+- **Việc hôm nay** (màn hình mở đầu): nhắc khách trả tiền, đơn cần đặt, hàng đặt lâu chưa về, hàng về khách chưa lấy — kèm nút nhắn WhatsApp.
+- **Báo cáo lãi**: biểu đồ lãi theo tháng (phí dịch vụ + chênh lệch voucher), tiền nhận theo hình thức, top khách, bảng từng tháng.
+- **Thu tiền & đối soát**: tiền mặt / Wise / chuyển khoản theo ngày, tiền mặt phải có trong két, chốt sổ và lịch sử chênh lệch.
+- **Trả hàng / hoàn tiền**: phí trả hàng (mặc định 15k), tiền hoàn khách, tiền sàn hoàn lại; lãi lỗ tự trừ đúng.
 - **Dữ liệu demo**: Cài đặt → Tạo dữ liệu demo (30 khách) / Xoá dữ liệu demo.
 
 ## Deploy lên Cloudflare (làm 1 lần)
