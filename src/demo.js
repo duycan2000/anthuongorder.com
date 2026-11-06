@@ -98,16 +98,19 @@ export function planDemoCustomer(idx, seed, fees, todayISO) {
   const n = idx === 0 ? 10 : pick(counts);
   const pool = [...PRODUCTS].sort(() => r() - 0.5);
   const items = [];
+  const seenPlatform = new Set();
   for (let k = 0; k < n; k++) {
     const p = pool[k % pool.length];
     const qty = p[3] < 100000 ? 1 + Math.floor(r() * 4) : r() < 0.85 ? 1 : 2;
     const platform = p[4];
     const rule = fees[platform] || fees.other;
+    const isFirst = !seenPlatform.has(platform);
     items.push({
       name: p[0], name_vi: p[1], variation: pick(p[2]), qty, unit_price: p[3], price: p[3] * qty, platform,
-      shipping: p[5], fee: k === 0 ? rule.first : rule.add,
+      shipping: p[5], fee: isFirst ? rule.first : rule.add,
       link: platform === 'shopee' ? `https://shopee.vn/${encodeURIComponent(p[1].replace(/\s+/g, '-'))}-i.${100000000 + Math.floor(r() * 899999999)}.${10000000000 + Math.floor(r() * 8999999999)}` : '',
     });
+    seenPlatform.add(platform);
   }
   const grand = items.reduce((a, i) => a + i.price + i.shipping + i.fee, 0);
 

@@ -1,7 +1,7 @@
 // An Thuong Order — internal app (vanilla JS SPA)
 import { renderQuoteImages, ensureFonts, canvasToBlob } from './quote-image.js';
 
-const CLIENT_VERSION = '0.3.1';
+const CLIENT_VERSION = '0.3.2';
 const $app = document.getElementById('app');
 
 // ---------------- utils ----------------
@@ -256,11 +256,13 @@ function newItem(platform = 'shopee') {
 }
 function recalcFees(q) {
   const fees = state.settings ? state.settings.fees : { shopee: { first: 25000, add: 15000 }, lazada: { first: 35000, add: 15000 }, tiki: { first: 35000, add: 15000 }, other: { first: 35000, add: 15000 } };
-  let k = 0;
+  // each platform (Shopee, Lazada, …) has its own "first item" fee inside one order
+  const seen = new Set();
   for (const it of q.items) {
     if (['cancelled', 'returned'].includes(it.status)) continue;
-    if (!it.fee_manual) { const r = fees[it.platform] || fees.other; it.fee = k === 0 ? r.first : r.add; }
-    k++;
+    const first = !seen.has(it.platform);
+    seen.add(it.platform);
+    if (!it.fee_manual) { const r = fees[it.platform] || fees.other; it.fee = first ? r.first : r.add; }
   }
 }
 function totalsOf(q) {
@@ -420,7 +422,10 @@ async function viewQuote(id) {
       <div class="r g"><span>TỔNG</span><span>${money(t.g)} ₫</span></div>`;
     const fees = state.settings ? state.settings.fees : null;
     const nf = view.querySelector('#next-fee');
-    if (fees) nf.innerHTML = `Món tiếp theo: phí <b>${money(t.n === 0 ? fees.shopee.first : fees.shopee.add)}</b> (Shopee)`;
+    if (fees) {
+      const used = new Set(q.items.filter((i) => !['cancelled', 'returned'].includes(i.status)).map((i) => i.platform));
+      nf.innerHTML = 'Món tiếp theo: ' + ['shopee', 'lazada'].map((pl) => `${PLATFORMS[pl]} <b>${money(used.has(pl) ? fees[pl].add : fees[pl].first)}</b>`).join(' · ');
+    }
     schedulePreview();
     renderMoney();
   }
@@ -1252,7 +1257,7 @@ async function viewSettings() {
     <div class="card pad"><h3 style="margin-bottom:10px">Bảng phí dịch vụ</h3>
       <table class="t"><thead><tr><th>Nền tảng</th><th class="num">Món đầu</th><th class="num">Mỗi món thêm</th><th class="num">Ship mặc định</th></tr></thead><tbody>
       ${feeRow('shopee', 'Shopee')}${feeRow('lazada', 'Lazada')}${feeRow('tiki', 'Tiki')}${feeRow('other', 'Khác / Amazon…')}</tbody></table>
-      <p class="muted" style="margin-top:8px">“Món” = 1 loại sản phẩm (số lượng bao nhiêu cũng vậy). Món đầu tiên của đơn tính phí “món đầu”, các món sau tính “mỗi món thêm”. Đổi phí chỉ áp dụng khi tạo/sửa báo giá.</p></div>
+      <p class="muted" style="margin-top:8px">“Món” = 1 loại sản phẩm (số lượng bao nhiêu cũng vậy). Trong 1 đơn, món đầu tiên của <b>mỗi sàn</b> tính phí “món đầu” (VD: Shopee đầu 25k, Lazada đầu 35k), các món sau cùng sàn tính “mỗi món thêm”. Đổi phí chỉ áp dụng khi tạo/sửa báo giá.</p></div>
     <div class="card pad" style="margin-top:14px"><h3 style="margin-bottom:10px">Thông tin in trên ảnh &amp; trang báo giá</h3>
       <div class="form-grid">
         ${shopField('name', 'Tên shop', 'AN THUONG ORDER')}
