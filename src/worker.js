@@ -1,8 +1,8 @@
 // An Thuong Order — internal app on Cloudflare Workers + D1.
-import { SCHEMA, DEFAULT_SETTINGS } from './schema.js';
+import { SCHEMA, MIGRATIONS, DEFAULT_SETTINGS } from './schema.js';
 import { renderPublicQuote, renderNotFound } from './public-quote.js';
 
-export const APP_VERSION = '0.1.0';
+export const APP_VERSION = '0.2.0';
 
 const PERMS = ['quotes', 'orders', 'settings', 'users'];
 const STATUSES = ['quoted', 'paid', 'ordered', 'arrived', 'received', 'cancelled', 'returned'];
@@ -57,6 +57,8 @@ function html(body, status = 200) {
   });
 }
 const nowIso = () => new Date().toISOString();
+// today's date in Vietnam (UTC+7), YYYY-MM-DD
+const todayVN = () => new Date(Date.now() + 7 * 3600000).toISOString().slice(0, 10);
 const int = (v, d = 0) => {
   const n = Math.round(Number(v));
   return Number.isFinite(n) ? n : d;
@@ -108,6 +110,9 @@ async function verifyPassword(password, stored) {
 // ---------- schema & settings ----------
 async function ensureSchema(env) {
   await env.DB.batch(SCHEMA.map((s) => env.DB.prepare(s)));
+  for (const m of MIGRATIONS) {
+    try { await env.DB.prepare(m).run(); } catch (_) { /* already applied */ }
+  }
   const row = await env.DB.prepare('SELECT COUNT(*) AS n FROM users').first();
   if (!row || !row.n) {
     const hash = await hashPassword(INITIAL_ADMIN.password);
@@ -250,6 +255,17 @@ async function handleApi(request, env, url) {
     if (seg.length === 2 && method === 'PUT') { need(user, 'quotes'); return saveOrder(request, env, user, id); }
     if (seg.length === 2 && method === 'DELETE') { need(user, 'users'); return deleteOrder(env, id); }
     if (seg.length === 3 && seg[2] === 'payment' && method === 'POST') { need(user, 'orders'); return setPayment(request, env, user, id); }
+    if (seg.length === 3 && seg[2] === 'payments' && method === 'POST') { need(user, 'orders'); return addPayment(request, env, user, id); }
+  }
+
+  if (seg[0] === 'payments' && seg.length === 2 && method === 'DELETE') { need(user, 'orders'); return deletePayment(env, user, int(seg[1])); }
+
+  if (seg[0] === 'purchasable' && method === 'GET') { need(user, 'orders'); return listPurchasable(env, url); }
+  if (seg[0] === 'purchases') {
+    need(user, 'orders');
+    if (seg.length === 1 && method === 'GET') return listPurchases(env, url);
+    if (seg.length === 1 && method === 'POST') return createPurchase(request, env, user);
+    if (seg.length === 2 && method === 'DELETE') return deletePurchase(env, user, int(seg[1]));
   }
 
   // items
@@ -359,8 +375,11 @@ async function searchCustomers(env, url) {
 async function loadOrder(env, id) {
   const order = await env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(id).first();
   if (!order) throw new HttpError(404, 'Không tìm thấy đơn');
-  const items = (await env.DB.prepare('SELECT * FROM items WHERE order_id = ? ORDER BY position, id').bind(id).all()).results || [];
-  return { order, items };
+  const items = (await env.DB.prepare(
+    'SELECT i.*, p.code AS purchase_code, p.purchased_at AS purchased_at FROM items i LEFT JOIN purchases p ON p.id = i.purchase_id WHERE i.order_id = ? ORDER BY i.position, i.id'
+  ).bind(id).all()).results || [];
+  const payments = (await env.DB.prepare('SELECT * FROM payments WHERE order_id = ? ORDER BY received_at, id').bind(id).all()).results || [];
+  return { order, items, payments };
 }
 
 async function listOrders(env, url) {
@@ -375,7 +394,11 @@ async function listOrders(env, url) {
   }
   const sql = `SELECT o.*,
       (SELECT COUNT(*) FROM items i WHERE i.order_id = o.id) AS item_count,
-      (SELECT GROUP_CONCAT(status) FROM items i WHERE i.order_id = o.id) AS statuses
+      (SELECT GROUP_CONCAT(status) FROM items i WHERE i.order_id = o.id) AS statuses,
+      (SELECT COALESCE(SUM(amount),0) FROM payments p WHERE p.order_id = o.id) AS received,
+      (SELECT COALESCE(SUM(cost),0) FROM items i WHERE i.order_id = o.id AND i.status NOT IN ('cancelled','returned')) AS cost_total,
+      (SELECT COUNT(*) FROM items i WHERE i.order_id = o.id AND i.status NOT IN ('cancelled','returned')) AS active_count,
+      (SELECT COUNT(*) FROM items i WHERE i.order_id = o.id AND i.status NOT IN ('cancelled','returned') AND i.cost IS NOT NULL) AS costed_count
     FROM orders o ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
     ORDER BY o.order_date DESC, o.id DESC LIMIT 300`;
   const rows = (await env.DB.prepare(sql).bind(...args).all()).results || [];
@@ -451,12 +474,11 @@ async function saveOrder(request, env, user, id) {
   const name = str(b.customer_name, 120);
   const phone = str(b.customer_phone, 40);
   if (!name) throw bad('Nhập tên khách');
-  const date = /^\d{4}-\d{2}-\d{2}$/.test(b.order_date || '') ? b.order_date : new Date().toISOString().slice(0, 10);
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(b.order_date || '') ? b.order_date : todayVN();
   const rawItems = Array.isArray(b.items) ? b.items : [];
   const items = rawItems.map(cleanItem).filter((it) => it.name || it.link || it.unit_price);
   if (!items.length) throw bad('Đơn cần ít nhất 1 sản phẩm');
   if (items.length > 200) throw bad('Tối đa 200 món mỗi đơn');
-  const payment = PAYMENT.includes(b.payment_status) ? b.payment_status : 'unpaid';
   const note = str(b.note, 1000);
   const now = nowIso();
 
@@ -467,6 +489,7 @@ async function saveOrder(request, env, user, id) {
     existing = loaded.order;
     oldItems = loaded.items;
   }
+  const payment = existing ? existing.payment_status : (PAYMENT.includes(b.payment_status) ? b.payment_status : 'unpaid');
   const customerId = await upsertCustomer(env, int(b.customer_id) || (existing && existing.customer_id), name, phone);
 
   const active = items.filter((it) => !['cancelled', 'returned'].includes(it.status || ''));
@@ -516,7 +539,7 @@ async function saveOrder(request, env, user, id) {
         `UPDATE items SET position=?, link=?, platform=?, name=?, name_vi=?, variation=?, qty=?, unit_price=?, price=?, shipping=?, fee=?, fee_manual=?,
           status=?, status_at=?, platform_order_id=?, cost=?, shelf=?, search=? WHERE id=? AND order_id=?`
       ).bind(it.position, it.link, it.platform, it.name, it.name_vi, it.variation, it.qty, it.unit_price, it.price, it.shipping, it.fee, it.fee_manual,
-        status, statusAt, it.platform_order_id, it.cost, it.shelf, search, old.id, orderId));
+        status, statusAt, it.platform_order_id, old.purchase_id ? old.cost : it.cost, it.shelf, search, old.id, orderId));
       if (old.status !== status) stmts.push(env.DB.prepare('INSERT INTO status_log (item_id, from_status, to_status, user_id, at) VALUES (?, ?, ?, ?, ?)').bind(old.id, old.status, status, user.id, now));
     } else {
       stmts.push(env.DB.prepare(
@@ -535,6 +558,7 @@ async function deleteOrder(env, id) {
   await env.DB.batch([
     env.DB.prepare('DELETE FROM status_log WHERE item_id IN (SELECT id FROM items WHERE order_id = ?)').bind(id),
     env.DB.prepare('DELETE FROM items WHERE order_id = ?').bind(id),
+    env.DB.prepare('DELETE FROM payments WHERE order_id = ?').bind(id),
     env.DB.prepare('DELETE FROM orders WHERE id = ?').bind(id),
   ]);
   return json({ ok: true });
@@ -543,6 +567,11 @@ async function deleteOrder(env, id) {
 async function setPayment(request, env, user, id) {
   const b = await readJson(request);
   const payment = PAYMENT.includes(b.payment_status) ? b.payment_status : 'unpaid';
+  await applyPayment(env, user, id, payment);
+  return json(await loadOrder(env, id));
+}
+
+async function applyPayment(env, user, id, payment) {
   const { items } = await loadOrder(env, id);
   const now = nowIso();
   const stmts = [env.DB.prepare('UPDATE orders SET payment_status = ?, updated_at = ? WHERE id = ?').bind(payment, now, id)];
@@ -556,7 +585,161 @@ async function setPayment(request, env, user, id) {
     }
   }
   await env.DB.batch(stmts);
-  return json(await loadOrder(env, id));
+}
+
+// ---------- payments (money received from customer) ----------
+async function syncPaymentStatus(env, user, orderId) {
+  const row = await env.DB.prepare(
+    `SELECT COALESCE(SUM(amount),0) AS total,
+       (SELECT method FROM payments WHERE order_id = ? ORDER BY received_at DESC, id DESC LIMIT 1) AS method
+     FROM payments WHERE order_id = ?`
+  ).bind(orderId, orderId).first();
+  const status = row.total > 0 ? (PAYMENT.includes(row.method) ? row.method : 'cash') : 'unpaid';
+  await applyPayment(env, user, orderId, status);
+}
+
+async function addPayment(request, env, user, orderId) {
+  const b = await readJson(request);
+  const order = await env.DB.prepare('SELECT id FROM orders WHERE id = ?').bind(orderId).first();
+  if (!order) throw new HttpError(404, 'Không tìm thấy đơn');
+  const amount = int(b.amount);
+  if (!amount || amount < 0) throw bad('Nhập số tiền đã nhận');
+  const method = ['cash', 'wise', 'bank'].includes(b.method) ? b.method : 'cash';
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(b.received_at || '') ? b.received_at : todayVN();
+  await env.DB.prepare('INSERT INTO payments (order_id, amount, method, received_at, note, user_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+    .bind(orderId, amount, method, date, str(b.note, 300), user.id, nowIso()).run();
+  await syncPaymentStatus(env, user, orderId);
+  return json(await loadOrder(env, orderId), 201);
+}
+
+async function deletePayment(env, user, id) {
+  const p = await env.DB.prepare('SELECT * FROM payments WHERE id = ?').bind(id).first();
+  if (!p) throw new HttpError(404, 'Không tìm thấy khoản thanh toán');
+  await env.DB.prepare('DELETE FROM payments WHERE id = ?').bind(id).run();
+  await syncPaymentStatus(env, user, p.order_id);
+  return json(await loadOrder(env, p.order_id));
+}
+
+// ---------- purchases (one checkout on Shopee/Lazada, may cover many items) ----------
+async function listPurchasable(env, url) {
+  const q = normalize(url.searchParams.get('q') || '');
+  const withUnpaid = url.searchParams.get('unpaid') === '1';
+  const args = [];
+  let where = `i.purchase_id IS NULL AND i.status IN (${withUnpaid ? "'quoted','paid'" : "'paid'"})`;
+  if (q) { where += ' AND i.search LIKE ?'; args.push(`%${q}%`); }
+  const rows = (await env.DB.prepare(
+    `SELECT i.*, o.code, o.customer_name, o.customer_phone, o.order_date, o.payment_status
+     FROM items i JOIN orders o ON o.id = i.order_id WHERE ${where}
+     ORDER BY o.order_date, o.id, i.position LIMIT 400`
+  ).bind(...args).all()).results || [];
+  return json({ items: rows });
+}
+
+export function allocate(total, weights) {
+  const W = weights.reduce((a, b) => a + b, 0);
+  const n = weights.length;
+  const out = weights.map((w) => (W > 0 ? Math.floor((total * w) / W) : Math.floor(total / n)));
+  let rest = total - out.reduce((a, b) => a + b, 0);
+  // give rounding remainder to the largest items first
+  const order = weights.map((w, i) => i).sort((a, b) => weights[b] - weights[a]);
+  for (let k = 0; rest > 0; k = (k + 1) % n, rest--) out[order[k]] += 1;
+  return out;
+}
+
+async function nextPurchaseCode(env, date) {
+  const prefix = `P-${date.slice(5, 7)}${date.slice(8, 10)}-`;
+  const rows = (await env.DB.prepare('SELECT code FROM purchases WHERE code LIKE ?').bind(prefix + '%').all()).results || [];
+  let max = 0;
+  for (const r of rows) { const n = parseInt(r.code.slice(prefix.length), 10); if (n > max) max = n; }
+  let code = `${prefix}${String(max + 1).padStart(2, '0')}`;
+  if (rows.some((r) => r.code === code)) code = `P-${date.slice(2, 4)}${date.slice(5, 7)}${date.slice(8, 10)}-${String(max + 1).padStart(2, '0')}`;
+  return code;
+}
+
+async function createPurchase(request, env, user) {
+  const b = await readJson(request);
+  const ids = [...new Set((Array.isArray(b.item_ids) ? b.item_ids : []).map((x) => int(x)).filter(Boolean))].slice(0, 100);
+  if (!ids.length) throw bad('Chọn ít nhất 1 món');
+  const paid = int(b.paid_amount);
+  if (!(paid > 0)) throw bad('Nhập số tiền thực trả');
+  const marks = ids.map(() => '?').join(',');
+  const rows = (await env.DB.prepare(
+    `SELECT i.*, o.customer_name, o.customer_phone, o.code AS order_code FROM items i JOIN orders o ON o.id = i.order_id WHERE i.id IN (${marks})`
+  ).bind(...ids).all()).results || [];
+  if (rows.length !== ids.length) throw bad('Một số món không còn tồn tại');
+  if (rows.some((r) => r.purchase_id)) throw bad('Một số món đã nằm trong lượt đặt khác');
+  if (rows.some((r) => ['cancelled', 'returned'].includes(r.status))) throw bad('Không thể đặt món đã huỷ / trả hàng');
+  // keep the order the user sees
+  rows.sort((a, b) => ids.indexOf(a.id) - ids.indexOf(b.id));
+  const weights = rows.map((r) => (r.price || 0) + (r.shipping || 0));
+  const quoted = weights.reduce((a, c) => a + c, 0);
+  const costs = allocate(paid, weights);
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(b.purchased_at || '') ? b.purchased_at : todayVN();
+  const platforms = [...new Set(rows.map((r) => r.platform))];
+  const poi = str(b.platform_order_id, 80);
+  const code = await nextPurchaseCode(env, date);
+  const now = nowIso();
+  const r = await env.DB.prepare(
+    `INSERT INTO purchases (code, platform, platform_order_id, purchased_at, quoted_amount, paid_amount, item_count, note, user_id, created_at)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+  ).bind(code, platforms.length === 1 ? platforms[0] : 'mixed', poi, date, quoted, paid, rows.length, str(b.note, 300), user.id, now).run();
+  const pid = r.meta.last_row_id;
+  const stmts = [];
+  rows.forEach((it, k) => {
+    const to = ['quoted', 'paid'].includes(it.status) ? 'ordered' : it.status;
+    const newPoi = it.platform_order_id || poi;
+    const search = itemSearch({ ...it, platform_order_id: newPoi }, it.customer_name, it.customer_phone, it.order_code);
+    stmts.push(env.DB.prepare('UPDATE items SET cost = ?, purchase_id = ?, status = ?, status_at = ?, platform_order_id = ?, search = ? WHERE id = ?')
+      .bind(costs[k], pid, to, to !== it.status ? now : it.status_at, newPoi, search, it.id));
+    if (to !== it.status) stmts.push(env.DB.prepare('INSERT INTO status_log (item_id, from_status, to_status, user_id, at) VALUES (?, ?, ?, ?, ?)').bind(it.id, it.status, to, user.id, now));
+  });
+  await env.DB.batch(stmts);
+  return json(await getPurchase(env, pid), 201);
+}
+
+async function getPurchase(env, id) {
+  const p = await env.DB.prepare('SELECT * FROM purchases WHERE id = ?').bind(id).first();
+  if (!p) throw new HttpError(404, 'Không tìm thấy lượt đặt');
+  p.items = (await env.DB.prepare(
+    `SELECT i.id, i.order_id, i.name, i.name_vi, i.variation, i.qty, i.price, i.shipping, i.cost, i.platform, i.status, o.code AS order_code, o.customer_name
+     FROM items i JOIN orders o ON o.id = i.order_id WHERE i.purchase_id = ? ORDER BY o.id, i.position`
+  ).bind(id).all()).results || [];
+  return p;
+}
+
+async function listPurchases(env, url) {
+  const month = url.searchParams.get('month') || '';
+  const args = [];
+  let where = '';
+  if (/^\d{4}-\d{2}$/.test(month)) { where = 'WHERE purchased_at LIKE ?'; args.push(month + '%'); }
+  const ps = (await env.DB.prepare(`SELECT * FROM purchases ${where} ORDER BY purchased_at DESC, id DESC LIMIT 200`).bind(...args).all()).results || [];
+  if (ps.length) {
+    const marks = ps.map(() => '?').join(',');
+    const items = (await env.DB.prepare(
+      `SELECT i.id, i.purchase_id, i.order_id, i.name, i.name_vi, i.variation, i.qty, i.price, i.shipping, i.cost, i.platform, i.status, o.code AS order_code, o.customer_name
+       FROM items i JOIN orders o ON o.id = i.order_id WHERE i.purchase_id IN (${marks}) ORDER BY o.id, i.position`
+    ).bind(...ps.map((p) => p.id)).all()).results || [];
+    for (const p of ps) p.items = items.filter((i) => i.purchase_id === p.id);
+  }
+  return json({ purchases: ps });
+}
+
+async function deletePurchase(env, user, id) {
+  const p = await getPurchase(env, id);
+  const now = nowIso();
+  const stmts = [];
+  for (const it of p.items) {
+    let to = it.status;
+    if (it.status === 'ordered') {
+      const o = await env.DB.prepare('SELECT payment_status FROM orders WHERE id = ?').bind(it.order_id).first();
+      to = o && o.payment_status !== 'unpaid' ? 'paid' : 'quoted';
+    }
+    stmts.push(env.DB.prepare('UPDATE items SET cost = NULL, purchase_id = NULL, status = ?, status_at = ? WHERE id = ?').bind(to, to !== it.status ? now : null, it.id));
+    if (to !== it.status) stmts.push(env.DB.prepare('INSERT INTO status_log (item_id, from_status, to_status, user_id, at) VALUES (?, ?, ?, ?, ?)').bind(it.id, it.status, to, user.id, now));
+  }
+  stmts.push(env.DB.prepare('DELETE FROM purchases WHERE id = ?').bind(id));
+  await env.DB.batch(stmts);
+  return json({ ok: true });
 }
 
 // ---------- items ----------

@@ -1,7 +1,7 @@
 // An Thuong Order — internal app (vanilla JS SPA)
 import { renderQuoteImages, ensureFonts, canvasToBlob } from './quote-image.js';
 
-const CLIENT_VERSION = '0.1.0';
+const CLIENT_VERSION = '0.2.0';
 const $app = document.getElementById('app');
 
 // ---------------- utils ----------------
@@ -48,6 +48,7 @@ const I = {
   dl: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4M7 10l5 5 5-5M12 15V3"/></svg>',
   ext: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3"/></svg>',
   dup: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></svg>',
+  cart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.7 13.4a2 2 0 0 0 2 1.6h9.7a2 2 0 0 0 2-1.6L23 6H6"/></svg>',
   share: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/></svg>',
 };
 
@@ -116,6 +117,7 @@ const routes = [
   [/^#\/quote\/(\d+)$/, (m) => viewQuote(+m[1]), null],
   [/^#\/orders$/, viewOrders, null],
   [/^#\/lookup$/, viewLookup, 'orders'],
+  [/^#\/purchase$/, viewPurchase, 'orders'],
   [/^#\/settings$/, viewSettings, 'settings'],
   [/^#\/users$/, viewUsers, 'users'],
   [/^#\/account$/, viewAccount, null],
@@ -161,6 +163,7 @@ window.addEventListener('beforeunload', (e) => { if (leaveGuard && leaveGuard())
 function navItems() {
   const items = [];
   if (can('quotes')) items.push(['#/quote/new', 'Tạo báo giá', I.quote, 'Báo giá']);
+  if (can('orders')) items.push(['#/purchase', 'Đặt hàng', I.cart, 'Đặt hàng']);
   if (can('orders')) items.push(['#/lookup', 'Tra cứu hàng về', I.box, 'Hàng về', state.waitingCount]);
   if (can('orders') || can('quotes')) items.push(['#/orders', 'Đơn hàng', I.list, 'Đơn']);
   if (can('settings')) items.push(['#/settings', 'Cài đặt', I.gear, 'Cài đặt']);
@@ -269,6 +272,19 @@ function feeFormulaText(q) {
   act.slice(1).forEach((i) => rest.set(i.fee, (rest.get(i.fee) || 0) + 1));
   return [money(first), ...[...rest].map(([f, n]) => (n > 1 ? `${n} × ${money(f)}` : money(f)))].join(' + ');
 }
+function profitOf(items, recv, grand) {
+  const act = items.filter((i) => !['cancelled', 'returned'].includes(i.status));
+  const done = act.filter((i) => i.cost != null);
+  const val = (i) => i.qty * i.unit_price + i.shipping;
+  const cost = done.reduce((a, i) => a + i.cost, 0);
+  const fee = done.reduce((a, i) => a + i.fee, 0);
+  const voucher = done.reduce((a, i) => a + val(i) - i.cost, 0);
+  const complete = act.length > 0 && done.length === act.length;
+  const useReceived = complete && recv > 0;
+  const recvDiff = useReceived ? recv - grand : 0;
+  const revenue = useReceived ? recv : complete ? grand : done.reduce((a, i) => a + val(i) + i.fee, 0);
+  return { active: act.length, costed: done.length, cost, fee, voucher, complete, useReceived, recvDiff, revenue, profit: fee + voucher + recvDiff };
+}
 function publicUrl(q) {
   const base = (state.settings && state.settings.shop.public_base) || location.origin;
   return q.public_id ? base.replace(/\/+$/, '') + '/q/' + q.public_id : '';
@@ -285,10 +301,10 @@ async function viewQuote(id) {
   if (id) {
     try {
       const r = await api('GET', '/orders/' + id);
-      q = { ...r.order, items: r.items.map((i) => ({ ...i })) };
+      q = { ...r.order, items: r.items.map((i) => ({ ...i })), payments: r.payments || [] };
     } catch (ex) { view.innerHTML = `<div class="empty">${esc(ex.message)}</div>`; return; }
   } else {
-    q = { id: null, code: '', public_id: '', order_date: todayISO(), customer_id: null, customer_name: '', customer_phone: '', payment_status: 'unpaid', note: '', items: [newItem()] };
+    q = { id: null, code: '', public_id: '', order_date: todayISO(), customer_id: null, customer_name: '', customer_phone: '', payment_status: 'unpaid', note: '', items: [newItem()], payments: [] };
   }
   let dirty = false;
   leaveGuard = () => dirty && (q.items.some((i) => i.name || i.link || i.unit_price) || q.customer_name);
@@ -306,7 +322,7 @@ async function viewQuote(id) {
           <div class="ac"><label class="l">Tên khách</label><input class="in" id="c-name" placeholder="Gõ tên để tìm khách cũ…" autocomplete="off" value="${esc(q.customer_name)}"><div class="ac-list hidden"></div></div>
           <div><label class="l">WhatsApp / Phone</label><input class="in" id="c-phone" placeholder="+1 262 277 9077" value="${esc(q.customer_phone)}"></div>
           <div><label class="l">Ngày báo giá</label><input class="in" id="c-date" type="date" value="${esc(q.order_date)}"></div>
-          <div><label class="l">Thanh toán</label><select class="in" id="c-pay">${Object.entries(PAYMENT).map(([k, v]) => `<option value="${k}" ${q.payment_status === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
+          <div><label class="l">Thanh toán</label><div class="in" id="pay-pill" style="display:flex;align-items:center;gap:6px;background:#F7F9F8"></div></div>
         </div>
       </div>
       <div class="card" style="margin-top:14px">
@@ -319,6 +335,7 @@ async function viewQuote(id) {
         <div class="card pad"><label class="l">Ghi chú cho khách (in trên ảnh &amp; trang báo giá)</label><textarea class="in" id="c-note" placeholder="VD: Price increased from 2,158,200 ₫ to 2,320,000 ₫">${esc(q.note || '')}</textarea></div>
         <div class="totals" id="totals"></div>
       </div>
+      <div id="money"></div>
       <div class="actions" id="actions"></div>
       <div id="share"></div>
     </div>
@@ -356,7 +373,7 @@ async function viewQuote(id) {
         <div class="idx"></div>
         <div data-lbl="Trạng thái"><select class="in" data-f="status">${Object.entries(STATUS).map(([k, v]) => `<option value="${k}" ${it.status === k ? 'selected' : ''}>${v}</option>`).join('')}</select></div>
         <div data-lbl="Mã đơn Shopee/Lazada"><input class="in" data-f="platform_order_id" placeholder="Mã đơn sàn (dán khi đặt hàng)" value="${esc(it.platform_order_id || '')}"></div>
-        <div data-lbl="Giá thực mua"><input class="in money" data-f="cost" inputmode="numeric" placeholder="Giá thực mua" value="${it.cost != null ? money(it.cost) : ''}"></div>
+        <div data-lbl="Tiền thực đặt">${it.purchase_id ? `<div class="in money" style="background:#F7F9F8;display:flex;justify-content:space-between;align-items:center" title="Phân bổ từ lượt đặt ${esc(it.purchase_code || '')}"><a href="#/purchase" class="muted" style="font-size:11.5px">${esc(it.purchase_code || 'lượt đặt')}</a><b>${money(it.cost)}</b></div>` : `<input class="in money" data-f="cost" inputmode="numeric" placeholder="Tiền thực đặt" value="${it.cost != null ? money(it.cost) : ''}">`}</div>
         <div data-lbl="Kệ / túi"><input class="in" data-f="shelf" placeholder="Kệ (VD: B3)" value="${esc(it.shelf || '')}"></div>
       </div>` : ''}
     </div>`;
@@ -389,6 +406,82 @@ async function viewQuote(id) {
     const nf = view.querySelector('#next-fee');
     if (fees) nf.innerHTML = `Món tiếp theo: phí <b>${money(t.n === 0 ? fees.shopee.first : fees.shopee.add)}</b> (Shopee)`;
     schedulePreview();
+    renderMoney();
+  }
+
+  // payments & profit
+  function renderMoney() {
+    const pill = view.querySelector('#pay-pill');
+    const recv = (q.payments || []).reduce((a, p) => a + p.amount, 0);
+    const t = totalsOf(q);
+    if (pill) pill.innerHTML = recv
+      ? `<span class="pill pay-${q.payment_status}">${PAYMENT[q.payment_status] || 'Đã nhận'}</span><b class="num" style="margin-left:auto">${money(recv)}</b>`
+      : `<span class="pill pay-unpaid">Chưa trả</span>`;
+    const el = view.querySelector('#money');
+    if (!el) return;
+    if (!q.id) { el.innerHTML = ''; return; }
+    const p = profitOf(q.items, recv, t.g);
+    const sign = (n) => (n > 0 ? '+' : n < 0 ? '−' : '') + money(Math.abs(n));
+    const methodLabel = { cash: 'Tiền mặt', wise: 'Wise', bank: 'Chuyển khoản' };
+    const diffRecv = recv - t.g;
+    el.innerHTML = `<div class="money-grid">
+      <div class="card pad">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px"><h3>Tiền khách trả</h3>${can('orders') ? '<button class="btn sm p" id="pay-add">+ Ghi nhận tiền</button>' : ''}</div>
+        ${(q.payments || []).length ? `<table class="t"><tbody>${q.payments.map((x) => `<tr><td class="nowrap">${fmtDate(x.received_at)}</td><td><span class="pill pay-${x.method}">${methodLabel[x.method] || x.method}</span>${x.note ? ` <span class="muted">${esc(x.note)}</span>` : ''}</td><td class="num"><b>${money(x.amount)}</b></td><td style="width:30px">${can('orders') ? `<button class="ic" data-delpay="${x.id}" title="Xoá">${I.trash}</button>` : ''}</td></tr>`).join('')}</tbody></table>` : '<div class="muted" style="padding:6px 0">Chưa ghi nhận khoản tiền nào.</div>'}
+        <div class="bar"><i style="width:${Math.min(100, t.g ? (recv / t.g) * 100 : 0)}%"></i></div>
+        <div style="display:flex;justify-content:space-between;gap:8px;font-variant-numeric:tabular-nums"><span>Đã nhận <b>${money(recv)}</b> / ${money(t.g)} ₫</span>
+          <b style="color:${diffRecv < 0 ? 'var(--warn)' : 'var(--ok)'}">${recv === 0 ? '' : diffRecv < 0 ? 'Còn thiếu ' + money(-diffRecv) : diffRecv > 0 ? 'Dư ' + money(diffRecv) : 'Đã đủ ✓'}</b></div>
+      </div>
+      <div class="card pad">
+        <h3 style="margin-bottom:8px">Lãi lỗ đơn này</h3>
+        <div class="kv"><span>Khách trả ${p.useReceived ? '(thực nhận)' : '(theo báo giá)'}</span><b>${money(p.revenue)}</b></div>
+        <div class="kv"><span>Tiền thực đặt <span class="muted">(${p.costed}/${p.active} món)</span></span><b>${money(p.cost)}</b></div>
+        <div class="kv sub"><span>· Phí dịch vụ${p.complete ? '' : ' (món đã đặt)'}</span><span>${sign(p.fee)}</span></div>
+        <div class="kv sub"><span>· Chênh lệch voucher / giá</span><span style="color:${p.voucher < 0 ? 'var(--red)' : 'inherit'}">${sign(p.voucher)}</span></div>
+        ${p.recvDiff ? `<div class="kv sub"><span>· Chênh lệch tiền nhận</span><span>${sign(p.recvDiff)}</span></div>` : ''}
+        <div class="kv big" style="color:${p.profit < 0 ? 'var(--red)' : 'var(--g)'}"><span>${p.complete ? 'LÃI' : 'LÃI TẠM TÍNH'}</span><span>${sign(p.profit)} ₫${p.complete && p.revenue ? ` <small>${Math.round((p.profit / p.revenue) * 1000) / 10}%</small>` : ''}</span></div>
+        ${p.complete ? '' : `<div class="muted" style="font-size:12.5px;margin-top:4px">Còn ${p.active - p.costed} món chưa có tiền thực đặt. Ghi lượt đặt ở mục <a href="#/purchase">Đặt hàng</a>.</div>`}
+      </div></div>`;
+    const add = el.querySelector('#pay-add');
+    if (add) add.onclick = () => paymentModal();
+    el.querySelectorAll('[data-delpay]').forEach((b) => { b.onclick = async () => {
+      if (!confirm('Xoá khoản tiền này?')) return;
+      try { applyServer(await api('DELETE', '/payments/' + b.dataset.delpay)); toast('Đã xoá', 'ok'); } catch (e) { toast(e.message, 'err'); }
+    }; });
+  }
+  function applyServer(r) {
+    // refresh statuses/payments from the server without losing unsaved text edits
+    q.payment_status = r.order.payment_status;
+    q.payments = r.payments || [];
+    for (const si of r.items) {
+      const it = q.items.find((x) => x.id === si.id);
+      if (it) Object.assign(it, { status: si.status, cost: si.cost, purchase_id: si.purchase_id, purchase_code: si.purchase_code });
+    }
+    renderRows();
+  }
+  function paymentModal() {
+    const recv = (q.payments || []).reduce((a, x) => a + x.amount, 0);
+    const left = Math.max(0, totalsOf(q).g - recv);
+    modal(`<h3>Ghi nhận tiền khách trả · #${esc(q.code)}</h3>
+      <div class="grid">
+        <div><label class="l">Số tiền đã nhận</label><input class="in money" name="amount" inputmode="numeric" value="${money(left)}" style="font-size:18px;font-weight:700"></div>
+        <div><label class="l">Hình thức</label><div class="seg">${[['cash', 'Tiền mặt'], ['wise', 'Wise'], ['bank', 'Chuyển khoản']].map(([k, v], i) => `<label><input type="radio" name="method" value="${k}" ${i === 0 ? 'checked' : ''}><span>${v}</span></label>`).join('')}</div></div>
+        <div><label class="l">Ngày nhận</label><input class="in" type="date" name="date" value="${todayISO()}"></div>
+        <div><label class="l">Ghi chú</label><input class="in" name="note" placeholder="VD: khách trả dư, làm tròn…"></div>
+      </div>
+      <div class="actions"><button class="btn" data-close>Huỷ</button><button class="btn p" data-ok>Xác nhận đã nhận tiền</button></div>`, (m, close) => {
+      const amt = m.querySelector('[name=amount]');
+      amt.focus(); amt.select();
+      amt.addEventListener('blur', () => { amt.value = money(parseMoney(amt.value)); });
+      m.querySelector('[data-ok]').onclick = async () => {
+        try {
+          if (dirty) await save(true);
+          const amount = parseMoney(amt.value);
+          const r = await api('POST', `/orders/${q.id}/payments`, { amount, method: m.querySelector('[name=method]:checked').value, received_at: m.querySelector('[name=date]').value, note: m.querySelector('[name=note]').value });
+          applyServer(r); close(); toast(`Đã ghi nhận ${money(amount)} ₫`, 'ok'); refreshWaiting();
+        } catch (e) { toast(e.message, 'err'); }
+      };
+    });
   }
 
   // preview
@@ -453,7 +546,6 @@ async function viewQuote(id) {
   $ac.addEventListener('mousedown', (e) => { const d = e.target.closest('[data-ac]'); if (d) { e.preventDefault(); pickCustomer(acItems[+d.dataset.ac]); } });
   $phone.addEventListener('input', () => { q.customer_phone = $phone.value; dirty = true; schedulePreview(); });
   view.querySelector('#c-date').addEventListener('change', (e) => { q.order_date = e.target.value || todayISO(); dirty = true; schedulePreview(); });
-  view.querySelector('#c-pay').addEventListener('change', (e) => { q.payment_status = e.target.value; dirty = true; });
   view.querySelector('#c-note').addEventListener('input', (e) => { q.note = e.target.value; dirty = true; schedulePreview(); });
 
   // ---- events: item rows ----
@@ -536,7 +628,7 @@ async function viewQuote(id) {
   function payload() {
     return {
       customer_id: q.customer_id, customer_name: q.customer_name.trim(), customer_phone: q.customer_phone.trim(), order_date: q.order_date,
-      payment_status: q.payment_status, note: q.note,
+      note: q.note,
       items: q.items.map((it) => ({ ...it, unit_price: it.unit_price, qty: it.qty })),
     };
   }
@@ -548,7 +640,7 @@ async function viewQuote(id) {
     saving = (async () => {
       const r = q.id ? await api('PUT', '/orders/' + q.id, payload()) : await api('POST', '/orders', payload());
       const wasNew = !q.id;
-      q = { ...r.order, items: r.items.map((i) => ({ ...i })) };
+      q = { ...r.order, items: r.items.map((i) => ({ ...i })), payments: r.payments || [] };
       dirty = false;
       if (wasNew) history.replaceState(null, '', '#/quote/' + q.id);
       view.querySelector('#qcode').textContent = '#' + q.code;
@@ -683,25 +775,35 @@ async function viewOrders() {
     const r = await api('GET', `/orders?month=${encodeURIComponent(m)}&q=${encodeURIComponent(term)}`);
     const os = r.orders;
     const sum = (k) => os.reduce((s, o) => s + (o[k] || 0), 0);
+    for (const o of os) {
+      o.complete = o.active_count > 0 && o.costed_count === o.active_count;
+      o.profit = o.complete ? (o.received > 0 ? o.received : o.grand_total) - o.cost_total : null;
+    }
+    const done = os.filter((o) => o.complete);
+    const profitSum = done.reduce((a, o) => a + o.profit, 0);
+    const unpaid = os.filter((o) => o.received < o.grand_total);
     view.querySelector('#o-stats').innerHTML = `
-      <div class="card stat"><div class="l">Đơn</div><div class="v">${os.length}</div></div>
-      <div class="card stat"><div class="l">Tiền hàng</div><div class="v">${money(sum('products_total'))}</div></div>
-      <div class="card stat"><div class="l">Phí dịch vụ</div><div class="v" style="color:var(--g)">${money(sum('fee_total'))}</div></div>
-      <div class="card stat"><div class="l">Chưa thu tiền</div><div class="v" style="color:var(--warn)">${os.filter((o) => o.payment_status === 'unpaid').length} đơn</div></div>`;
+      <div class="card stat"><div class="l">Đơn · tổng báo giá</div><div class="v">${os.length} <small class="muted" style="font-size:13px;font-weight:600">· ${money(sum('grand_total'))}</small></div></div>
+      <div class="card stat"><div class="l">Đã thu từ khách</div><div class="v">${money(sum('received'))}</div><div class="muted" style="font-size:12px">Chưa thu đủ: ${unpaid.length} đơn</div></div>
+      <div class="card stat"><div class="l">Tiền thực đặt</div><div class="v">${money(sum('cost_total'))}</div></div>
+      <div class="card stat"><div class="l">Lãi (${done.length} đơn đã đặt đủ)</div><div class="v" style="color:${profitSum < 0 ? 'var(--red)' : 'var(--g)'}">${money(profitSum)}</div></div>`;
     if (!os.length) {
       view.querySelector('#o-table').innerHTML = '<div class="empty">Chưa có đơn nào.</div>';
       view.querySelector('#o-cards').innerHTML = '<div class="empty card">Chưa có đơn nào.</div>';
       return;
     }
-    view.querySelector('#o-table').innerHTML = `<table class="t"><thead><tr><th>Mã · ngày</th><th>Khách</th><th class="num">Món</th><th class="num">Tổng</th><th>Thanh toán</th><th>Tiến độ</th></tr></thead><tbody>
+    view.querySelector('#o-table').innerHTML = `<table class="t"><thead><tr><th>Mã · ngày</th><th>Khách</th><th class="num">Món</th><th class="num">Tổng</th><th class="num">Đã nhận</th><th>Tiến độ</th><th class="num">Lãi</th></tr></thead><tbody>
       ${os.map((o) => `<tr class="click" data-id="${o.id}"><td><b>${esc(o.code)}</b><div class="muted">${fmtDate(o.order_date)}</div></td>
         <td><b>${esc(o.customer_name)}</b><div class="muted">${esc(o.customer_phone || '')}</div></td>
         <td class="num">${o.item_count}</td><td class="num"><b>${money(o.grand_total)}</b></td>
-        <td><span class="pill pay-${o.payment_status}">${PAYMENT[o.payment_status]}</span></td><td>${progressOf(o.statuses)}</td></tr>`).join('')}
+        <td class="num">${o.received ? `<span style="color:${o.received < o.grand_total ? 'var(--warn)' : 'var(--ok)'};font-weight:700">${money(o.received)}</span>` : '<span class="pill pay-unpaid">Chưa trả</span>'}</td>
+        <td>${progressOf(o.statuses)}</td>
+        <td class="num">${o.complete ? `<b style="color:${o.profit < 0 ? 'var(--red)' : 'var(--g)'}">${money(o.profit)}</b>` : `<span class="muted" title="Số món đã có tiền thực đặt">${o.costed_count}/${o.active_count} đặt</span>`}</td></tr>`).join('')}
       </tbody></table>`;
     view.querySelector('#o-cards').innerHTML = os.map((o) => `<div class="card mc click" data-id="${o.id}">
       <div class="top"><div><b>${esc(o.customer_name)}</b><div class="muted">${esc(o.code)} · ${fmtDate(o.order_date)} · ${o.item_count} món</div></div><b>${money(o.grand_total)}</b></div>
-      <div style="display:flex;gap:6px;margin-top:8px"><span class="pill pay-${o.payment_status}">${PAYMENT[o.payment_status]}</span>${progressOf(o.statuses)}</div></div>`).join('');
+      <div style="display:flex;gap:6px;margin-top:8px;align-items:center"><span class="pill pay-${o.payment_status}">${o.received ? 'Đã nhận ' + money(o.received) : 'Chưa trả'}</span>${progressOf(o.statuses)}
+        <span style="margin-left:auto;font-weight:700;color:${o.complete ? (o.profit < 0 ? 'var(--red)' : 'var(--g)') : 'var(--mut)'}">${o.complete ? 'Lãi ' + money(o.profit) : o.costed_count + '/' + o.active_count + ' đặt'}</span></div></div>`).join('');
   };
   view.addEventListener('click', (e) => { const r = e.target.closest('[data-id]'); if (r) location.hash = '#/quote/' + r.dataset.id; });
   view.querySelector('#o-month').addEventListener('change', load);
@@ -816,6 +918,188 @@ async function viewLookup() {
   document.addEventListener('keydown', onKey);
   view.querySelector('#l-q').addEventListener('input', debounce(() => load().catch((x) => toast(x.message, 'err')), 220));
   await load().catch((x) => toast(x.message, 'err'));
+}
+
+// ---------------- purchase (gom món đặt 1 lần để ăn voucher) ----------------
+function allocate(total, weights) {
+  const W = weights.reduce((a, b) => a + b, 0);
+  const n = weights.length;
+  if (!n) return [];
+  const out = weights.map((w) => (W > 0 ? Math.floor((total * w) / W) : Math.floor(total / n)));
+  let rest = total - out.reduce((a, b) => a + b, 0);
+  const order = weights.map((w, i) => i).sort((a, b) => weights[b] - weights[a]);
+  for (let k = 0; rest > 0; k = (k + 1) % n, rest--) out[order[k]] += 1;
+  return out;
+}
+async function viewPurchase() {
+  const view = shell('');
+  let tab = sessionStorage.getItem('at.ptab') || 'new';
+  let withUnpaid = sessionStorage.getItem('at.punpaid') === '1';
+  let items = [];
+  const sel = [];// keep click order
+  view.innerHTML = `
+    <div class="page-h"><h1>Đặt hàng <small>gom nhiều món vào 1 lần thanh toán để ăn voucher</small></h1>
+      <div class="chips"><button class="chip" data-tab="new">Chọn món để đặt</button><button class="chip" data-tab="list">Lượt đặt đã ghi</button></div></div>
+    <div id="p-body"></div>`;
+  const body = view.querySelector('#p-body');
+  const setTab = (t) => {
+    tab = t; sessionStorage.setItem('at.ptab', t);
+    view.querySelectorAll('[data-tab]').forEach((c) => c.classList.toggle('on', c.dataset.tab === t));
+    t === 'new' ? renderNew() : renderList();
+  };
+  view.querySelectorAll('[data-tab]').forEach((c) => { c.onclick = () => setTab(c.dataset.tab); });
+
+  // ---- tab: new purchase ----
+  function renderNew() {
+    body.innerHTML = `
+      <div class="toolbar"><div class="search">${I.search}<input class="in" id="p-q" placeholder="Tìm khách, mã đơn, tên hàng…"></div>
+        <label style="display:flex;gap:6px;align-items:center;font-weight:500"><input type="checkbox" class="cb" id="p-unpaid" ${withUnpaid ? 'checked' : ''}> Gồm đơn chưa trả tiền</label></div>
+      <div class="pq">
+        <div id="p-groups"><div class="empty">Đang tải…</div></div>
+        <div class="pq-panel"><div class="card pad" id="p-panel"></div></div>
+      </div>
+      <div class="pq-mbar hidden" id="p-mbar"></div>`;
+    const load = async () => {
+      const term = body.querySelector('#p-q').value.trim();
+      const r = await api('GET', `/purchasable?unpaid=${withUnpaid ? 1 : 0}&q=${encodeURIComponent(term)}`);
+      items = r.items;
+      for (let i = sel.length - 1; i >= 0; i--) if (!items.find((x) => x.id === sel[i])) sel.splice(i, 1);
+      renderGroups(); renderPanel();
+    };
+    body.querySelector('#p-q').addEventListener('input', debounce(() => load().catch((e) => toast(e.message, 'err')), 220));
+    body.querySelector('#p-unpaid').addEventListener('change', (e) => { withUnpaid = e.target.checked; sessionStorage.setItem('at.punpaid', withUnpaid ? '1' : '0'); load(); });
+    body.addEventListener('change', (e) => {
+      if (e.target.dataset.pi) { toggle(+e.target.dataset.pi, e.target.checked); }
+      if (e.target.dataset.po) { const ids = items.filter((i) => i.order_id === +e.target.dataset.po).map((i) => i.id); ids.forEach((id) => toggle(id, e.target.checked, true)); renderGroups(); renderPanel(); }
+    });
+    body.addEventListener('click', (e) => {
+      const row = e.target.closest('[data-prow]');
+      if (row && !e.target.closest('input,a,button')) { const id = +row.dataset.prow; toggle(id, !sel.includes(id)); }
+      if (e.target.closest('[data-jump]')) document.getElementById('p-panel').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    });
+    load().catch((e) => toast(e.message, 'err'));
+  }
+  function toggle(id, on, silent) {
+    const k = sel.indexOf(id);
+    if (on && k < 0) sel.push(id);
+    if (!on && k >= 0) sel.splice(k, 1);
+    if (!silent) { renderGroups(); renderPanel(); }
+  }
+  function renderGroups() {
+    const box = body.querySelector('#p-groups');
+    if (!box) return;
+    if (!items.length) {
+      box.innerHTML = `<div class="empty card">${withUnpaid ? 'Không có món nào đang chờ đặt.' : 'Không có món nào đã thanh toán đang chờ đặt. Tick “Gồm đơn chưa trả tiền” để xem thêm.'}</div>`;
+      return;
+    }
+    const groups = new Map();
+    for (const it of items) { if (!groups.has(it.order_id)) groups.set(it.order_id, []); groups.get(it.order_id).push(it); }
+    box.innerHTML = [...groups.values()].map((g) => {
+      const o = g[0];
+      const all = g.every((i) => sel.includes(i.id));
+      return `<div class="card pg">
+        <div class="pg-h"><label style="display:flex;gap:10px;align-items:center;min-width:0"><input type="checkbox" class="cb" data-po="${o.order_id}" ${all ? 'checked' : ''}>
+          <span style="min-width:0"><b>${esc(o.customer_name)}</b> <span class="muted">· ${esc(o.code)} · ${fmtDate(o.order_date)}</span></span></label>
+          <span class="pill pay-${o.payment_status}">${PAYMENT[o.payment_status]}</span></div>
+        ${g.map((it) => `<div class="pg-it ${sel.includes(it.id) ? 'sel' : ''}" data-prow="${it.id}">
+          <input type="checkbox" class="cb" data-pi="${it.id}" ${sel.includes(it.id) ? 'checked' : ''}>
+          <div style="min-width:0"><div class="ell"><b>${esc(it.name || it.name_vi || '—')}</b>${it.variation ? ` <span class="muted">· ${esc(it.variation)}</span>` : ''}</div>
+            <div class="muted" style="font-size:12.5px"><span class="pill p-${it.platform}" style="font-size:11px">${PLATFORMS[it.platform]}</span> x${it.qty}${it.name_vi && it.name ? ' · ' + esc(it.name_vi) : ''}</div></div>
+          ${it.link ? `<a class="ic" href="${esc(it.link)}" target="_blank" rel="noopener" title="Mở link để đặt">${I.ext}</a>` : '<span></span>'}
+          <div class="num"><b>${money(it.price + it.shipping)}</b><div class="muted" style="font-size:11.5px">${it.shipping ? `${money(it.price)} + ship ${money(it.shipping)}` : 'hàng, free ship'}</div></div>
+        </div>`).join('')}
+      </div>`;
+    }).join('');
+  }
+  function renderPanel() {
+    const panel = body.querySelector('#p-panel');
+    if (!panel) return;
+    const chosen = sel.map((id) => items.find((i) => i.id === id)).filter(Boolean);
+    const quoted = chosen.reduce((a, i) => a + i.price + i.shipping, 0);
+    const customers = new Set(chosen.map((i) => i.order_id)).size;
+    const prevPaid = panel.querySelector('#p-paid') ? panel.querySelector('#p-paid').value : '';
+    const prevPoi = panel.querySelector('#p-poi') ? panel.querySelector('#p-poi').value : '';
+    const prevNote = panel.querySelector('#p-note') ? panel.querySelector('#p-note').value : '';
+    const prevDate = panel.querySelector('#p-date') ? panel.querySelector('#p-date').value : todayISO();
+    panel.innerHTML = `
+      <h3>Lượt đặt mới</h3>
+      <div class="muted" style="margin:2px 0 10px">${chosen.length ? `${chosen.length} món · ${customers} đơn khách` : 'Tick các món bạn đang đặt chung 1 lần thanh toán'}</div>
+      <div class="kv"><span>Giá trị theo báo giá<br><small class="muted">hàng + ship khách trả</small></span><b style="font-size:18px">${money(quoted)} ₫</b></div>
+      <div style="margin-top:10px"><label class="l">Số tiền thực trả trên Shopee / Lazada</label>
+        <input class="in money" id="p-paid" inputmode="numeric" placeholder="VD: 1,120,000" value="${esc(prevPaid)}" style="font-size:18px;font-weight:700;min-height:44px" ${chosen.length ? '' : 'disabled'}></div>
+      <div id="p-save-box"></div>
+      <div class="grid" style="grid-template-columns:1fr 1fr;margin-top:10px">
+        <div><label class="l">Ngày đặt</label><input class="in" type="date" id="p-date" value="${esc(prevDate)}"></div>
+        <div><label class="l">Mã đơn sàn</label><input class="in" id="p-poi" placeholder="tuỳ chọn" value="${esc(prevPoi)}"></div>
+      </div>
+      <div style="margin-top:10px"><label class="l">Ghi chú</label><input class="in" id="p-note" placeholder="VD: voucher 50k, freeship xtra" value="${esc(prevNote)}"></div>
+      <div id="p-alloc"></div>
+      <button class="btn p" id="p-submit" style="width:100%;justify-content:center;margin-top:12px;padding:11px" ${chosen.length ? '' : 'disabled'}>Ghi nhận lượt đặt</button>`;
+    const paidIn = panel.querySelector('#p-paid');
+    const update = () => {
+      const paid = parseMoney(paidIn.value);
+      const save = quoted - paid;
+      panel.querySelector('#p-save-box').innerHTML = paid ? `<div class="save-box ${save < 0 ? 'neg' : ''}"><span>${save >= 0 ? 'Tiết kiệm nhờ voucher' : 'Trả cao hơn báo giá'}</span><b>${save >= 0 ? '+' : '−'}${money(Math.abs(save))} ₫ <small>${quoted ? Math.round((Math.abs(save) / quoted) * 1000) / 10 : 0}%</small></b></div>` : '';
+      const costs = paid ? allocate(paid, chosen.map((i) => i.price + i.shipping)) : [];
+      panel.querySelector('#p-alloc').innerHTML = chosen.length ? `<div class="alloc"><div class="l" style="margin:12px 0 4px">Chia tiền thực trả cho từng món</div>
+        ${chosen.map((it, k) => `<div class="alloc-r"><span class="ell"><b>${esc(it.customer_name)}</b> · ${esc(it.name || it.name_vi || '—')}</span><span class="num muted">${money(it.price + it.shipping)}</span><span class="num"><b>${paid ? money(costs[k]) : '—'}</b></span></div>`).join('')}</div>` : '';
+      const mbar = body.querySelector('#p-mbar');
+      if (mbar) { mbar.classList.toggle('hidden', !chosen.length); mbar.innerHTML = `<span><b>${chosen.length} món</b> · ${money(quoted)} ₫</span><button class="btn p" data-jump>Nhập tiền thực trả ↓</button>`; }
+    };
+    paidIn.addEventListener('input', update);
+    paidIn.addEventListener('blur', () => { if (paidIn.value) paidIn.value = money(parseMoney(paidIn.value)); });
+    update();
+    panel.querySelector('#p-submit').onclick = async () => {
+      const paid = parseMoney(paidIn.value);
+      if (!paid) { toast('Nhập số tiền thực trả', 'err'); paidIn.focus(); return; }
+      try {
+        const p = await api('POST', '/purchases', { item_ids: chosen.map((i) => i.id), paid_amount: paid, purchased_at: panel.querySelector('#p-date').value, platform_order_id: panel.querySelector('#p-poi').value, note: panel.querySelector('#p-note').value });
+        const save = p.quoted_amount - p.paid_amount;
+        toast(`Đã ghi lượt đặt <b>${esc(p.code)}</b> · ${p.item_count} món · ${save >= 0 ? 'tiết kiệm' : 'chênh'} ${money(Math.abs(save))} ₫`, 'ok', 6000);
+        sel.length = 0;
+        panel.querySelector('#p-paid').value = ''; panel.querySelector('#p-poi').value = ''; panel.querySelector('#p-note').value = '';
+        const term = body.querySelector('#p-q').value.trim();
+        const r = await api('GET', `/purchasable?unpaid=${withUnpaid ? 1 : 0}&q=${encodeURIComponent(term)}`);
+        items = r.items; renderGroups(); renderPanel(); refreshWaiting();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  }
+
+  // ---- tab: purchase list ----
+  async function renderList() {
+    const month = sessionStorage.getItem('at.pmonth') || todayISO().slice(0, 7);
+    body.innerHTML = `<div class="toolbar"><input class="in" type="month" id="pl-month" value="${month}" style="max-width:170px"></div>
+      <div class="stats" id="pl-stats"></div><div id="pl-list"><div class="empty">Đang tải…</div></div>`;
+    const load = async () => {
+      const m = body.querySelector('#pl-month').value;
+      sessionStorage.setItem('at.pmonth', m);
+      const r = await api('GET', '/purchases?month=' + encodeURIComponent(m));
+      const ps = r.purchases;
+      const q = ps.reduce((a, p) => a + p.quoted_amount, 0), pd = ps.reduce((a, p) => a + p.paid_amount, 0);
+      body.querySelector('#pl-stats').innerHTML = `
+        <div class="card stat"><div class="l">Lượt đặt</div><div class="v">${ps.length}</div></div>
+        <div class="card stat"><div class="l">Giá trị theo báo giá</div><div class="v">${money(q)}</div></div>
+        <div class="card stat"><div class="l">Thực trả</div><div class="v">${money(pd)}</div></div>
+        <div class="card stat"><div class="l">Tiết kiệm voucher</div><div class="v" style="color:${q - pd < 0 ? 'var(--red)' : 'var(--g)'}">${money(q - pd)}</div></div>`;
+      body.querySelector('#pl-list').innerHTML = ps.length ? ps.map((p) => {
+        const save = p.quoted_amount - p.paid_amount;
+        return `<div class="card pl">
+          <div class="pl-h"><div><b>${esc(p.code)}</b> <span class="muted">· ${fmtDate(p.purchased_at)} · ${p.item_count} món${p.platform_order_id ? ' · ' + esc(p.platform_order_id) : ''}${p.note ? ' · ' + esc(p.note) : ''}</span></div>
+            <div class="pl-n"><span class="muted">${money(p.quoted_amount)} →</span> <b>${money(p.paid_amount)}</b> <span class="pill ${save >= 0 ? 's-received' : 's-cancelled'}">${save >= 0 ? '+' : '−'}${money(Math.abs(save))}</span>
+            <button class="btn sm ghost danger" data-undo="${p.id}" data-code="${esc(p.code)}">Huỷ lượt</button></div></div>
+          ${p.items.map((i) => `<div class="alloc-r"><span class="ell"><a href="#/quote/${i.order_id}"><b>${esc(i.customer_name)}</b></a> <span class="muted">${esc(i.order_code)}</span> · ${esc(i.name || i.name_vi || '—')}${i.variation ? ' <span class="muted">· ' + esc(i.variation) + '</span>' : ''}</span><span class="num muted">${money(i.price + i.shipping)}</span><span class="num"><b>${money(i.cost)}</b></span></div>`).join('')}
+        </div>`;
+      }).join('') : '<div class="empty card">Chưa có lượt đặt nào trong tháng này.</div>';
+    };
+    body.querySelector('#pl-month').addEventListener('change', load);
+    body.onclick = async (e) => {
+      const u = e.target.closest('[data-undo]'); if (!u) return;
+      if (!confirm(`Huỷ lượt đặt ${u.dataset.code}? Các món sẽ quay về "chờ đặt" và xoá tiền thực đặt.`)) return;
+      try { await api('DELETE', '/purchases/' + u.dataset.undo); toast('Đã huỷ lượt đặt', 'ok'); load(); refreshWaiting(); } catch (x) { toast(x.message, 'err'); }
+    };
+    await load().catch((e) => toast(e.message, 'err'));
+  }
+  setTab(tab);
 }
 
 // ---------------- settings ----------------

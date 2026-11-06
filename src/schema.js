@@ -85,10 +85,41 @@ export const SCHEMA = [
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL
   )`,
+  `CREATE TABLE IF NOT EXISTS payments (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id INTEGER NOT NULL,
+    amount INTEGER NOT NULL,
+    method TEXT NOT NULL DEFAULT 'cash',
+    received_at TEXT NOT NULL,
+    note TEXT,
+    user_id INTEGER,
+    created_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS purchases (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT NOT NULL UNIQUE,
+    platform TEXT,
+    platform_order_id TEXT,
+    purchased_at TEXT NOT NULL,
+    quoted_amount INTEGER NOT NULL DEFAULT 0,
+    paid_amount INTEGER NOT NULL DEFAULT 0,
+    item_count INTEGER NOT NULL DEFAULT 0,
+    note TEXT,
+    user_id INTEGER,
+    created_at TEXT NOT NULL
+  )`,
   `CREATE INDEX IF NOT EXISTS idx_items_order ON items(order_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_payments_order ON payments(order_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_purchases_date ON purchases(purchased_at)`,
   `CREATE INDEX IF NOT EXISTS idx_items_status ON items(status)`,
   `CREATE INDEX IF NOT EXISTS idx_orders_date ON orders(order_date)`,
   `CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone)`,
+];
+
+// Column additions for databases created by older versions (errors = already applied).
+export const MIGRATIONS = [
+  `ALTER TABLE items ADD COLUMN purchase_id INTEGER`,
+  `CREATE INDEX IF NOT EXISTS idx_items_purchase ON items(purchase_id)`,
 ];
 
 export const DEFAULT_SETTINGS = {
