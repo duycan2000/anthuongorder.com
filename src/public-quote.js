@@ -120,7 +120,7 @@ export function renderPublicQuote({ order, items, settings, url }) {
     const link = safeLink(it.link);
     return `<div class="it ${off ? 'off' : ''}">
       <div class="nm">${idx + 1}. ${esc(it.name || it.name_vi || 'Item')}</div>
-      ${it.variation ? `<div class="vr">${esc(it.variation)}</div>` : ''}
+      ${it.variation || it.variation2 ? `<div class="vr">${esc([it.variation, it.variation2].filter(Boolean).join(', '))}</div>` : ''}
       <div class="meta"><span class="pill p-${esc(it.platform)}">${esc(PLATFORM[it.platform] || 'Online')}</span>
         <span class="pill" style="background:#F1F4F2;color:#3d4a45">Qty ${it.qty}</span>
         <span class="pill ${st.cls}">${st.label}</span>

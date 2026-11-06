@@ -1,7 +1,7 @@
 // An Thuong Order — internal app (vanilla JS SPA)
 import { renderQuoteImages, ensureFonts, canvasToBlob } from './quote-image.js';
 
-const CLIENT_VERSION = '0.3.0';
+const CLIENT_VERSION = '0.3.1';
 const $app = document.getElementById('app');
 
 // ---------------- utils ----------------
@@ -252,7 +252,7 @@ async function viewLogin() {
 // ---------------- quote editor ----------------
 function newItem(platform = 'shopee') {
   const f = (state.settings && state.settings.fees[platform]) || { ship: 0 };
-  return { id: null, link: '', platform, name: '', name_vi: '', variation: '', qty: 1, unit_price: 0, shipping: f.ship || 0, fee: 0, fee_manual: 0, status: null, platform_order_id: '', cost: null };
+  return { id: null, link: '', platform, name: '', name_vi: '', variation: '', variation2: '', qty: 1, unit_price: 0, shipping: f.ship || 0, fee: 0, fee_manual: 0, status: null, platform_order_id: '', cost: null };
 }
 function recalcFees(q) {
   const fees = state.settings ? state.settings.fees : { shopee: { first: 25000, add: 15000 }, lazada: { first: 35000, add: 15000 }, tiki: { first: 35000, add: 15000 }, other: { first: 35000, add: 15000 } };
@@ -278,6 +278,7 @@ function feeFormulaText(q) {
   act.slice(1).forEach((i) => rest.set(i.fee, (rest.get(i.fee) || 0) + 1));
   return [money(first), ...[...rest].map(([f, n]) => (n > 1 ? `${n} × ${money(f)}` : money(f)))].join(' + ');
 }
+const vt = (it) => [it.variation, it.variation2].filter(Boolean).join(', ');
 function profitOf(items, recv, grand) {
   const act = items.filter((i) => !['cancelled', 'returned'].includes(i.status));
   const done = act.filter((i) => i.cost != null);
@@ -338,7 +339,6 @@ async function viewQuote(id) {
         </div>
       </div>
       <div class="card" style="margin-top:14px">
-        <div class="items-h"><div>#</div><div>Tên tiếng Anh (in trên ảnh)</div><div>Phân loại</div><div class="num">SL</div><div class="num">Đơn giá</div><div class="num">Ship</div><div class="num">Phí DV</div><div class="num">Cộng</div></div>
         <div id="rows"></div>
         <div class="items-f"><button class="btn" id="add">${I.quote} Thêm món <span class="kbd">Ctrl+Enter</span></button>
           <span class="muted" id="next-fee"></span></div>
@@ -373,13 +373,17 @@ async function viewQuote(id) {
       </div>
       <div class="r2">
         <div class="idx"></div>
-        <div class="c-name" data-lbl="Tên tiếng Anh"><input class="in" data-f="name" placeholder="Product name in English" value="${esc(it.name)}"></div>
-        <div class="c-var" data-lbl="Phân loại"><input class="in" data-f="variation" placeholder="Màu, size…" value="${esc(it.variation)}"></div>
-        <div data-lbl="SL"><input class="in money" data-f="qty" inputmode="numeric" value="${it.qty}"></div>
-        <div data-lbl="Đơn giá"><input class="in money" data-f="unit_price" inputmode="numeric" placeholder="0" value="${it.unit_price ? money(it.unit_price) : ''}"></div>
-        <div data-lbl="Ship"><input class="in money" data-f="shipping" inputmode="numeric" value="${money(it.shipping)}"></div>
-        <div data-lbl="Phí DV" class="fee-wrap"><input class="in money ${it.fee_manual ? '' : 'auto'}" data-f="fee" inputmode="numeric" value="${money(it.fee)}" title="${it.fee_manual ? 'Phí sửa tay' : 'Phí tự tính'}">${it.fee_manual ? '<button class="reset" type="button" data-act="fee-auto" title="Về phí tự động">↺</button>' : ''}</div>
-        <div class="tot c-tot" data-tot>${money(total)}</div>
+        <div class="c-name"><label class="fx" data-tag="EN"><input class="in" data-f="name" placeholder="Tên tiếng Anh (in trên ảnh gửi khách)" value="${esc(it.name)}"></label></div>
+        <div class="c-var"><label class="fx" data-tag="PL 1"><input class="in" data-f="variation" placeholder="Màu, kiểu…" value="${esc(it.variation)}"></label></div>
+        <div class="c-var2"><label class="fx" data-tag="PL 2"><input class="in" data-f="variation2" placeholder="Size, dung tích…" value="${esc(it.variation2 || '')}"></label></div>
+      </div>
+      <div class="r2b">
+        <div class="idx"></div>
+        <label class="fx" data-tag="SL"><input class="in money" data-f="qty" inputmode="numeric" value="${it.qty}" title="Số lượng"></label>
+        <label class="fx" data-tag="Giá SP"><input class="in money" data-f="unit_price" inputmode="numeric" placeholder="0" value="${it.unit_price ? money(it.unit_price) : ''}" title="Đơn giá sản phẩm (1 cái)"></label>
+        <label class="fx" data-tag="Ship"><input class="in money" data-f="shipping" inputmode="numeric" value="${money(it.shipping)}" title="Phí ship của sàn (Shopee thường 0)"></label>
+        <div class="fee-wrap"><label class="fx" data-tag="Phí DV"><input class="in money ${it.fee_manual ? '' : 'auto'}" data-f="fee" inputmode="numeric" value="${money(it.fee)}" title="${it.fee_manual ? 'Phí dịch vụ sửa tay' : 'Phí dịch vụ tự tính'}"></label>${it.fee_manual ? '<button class="reset" type="button" data-act="fee-auto" title="Về phí tự động">↺</button>' : ''}</div>
+        <div class="tot c-tot"><span class="muted" style="font-weight:600;font-size:11px;margin-right:6px">CỘNG</span><span data-tot>${money(total)}</span></div>
       </div>
       ${isExisting() ? `<div class="r3">
         <div class="idx"></div>
@@ -504,7 +508,7 @@ async function viewQuote(id) {
     canvases = renderQuoteImages({
       shop,
       order: { code: q.code, order_date: q.order_date, customer_name: q.customer_name, customer_phone: q.customer_phone, note: q.note },
-      items: q.items.map((i) => ({ ...i, price: i.qty * i.unit_price })),
+      items: q.items.map((i) => ({ ...i, variation: vt(i), price: i.qty * i.unit_price })),
     });
     const pages = view.querySelector('#pages');
     pages.innerHTML = '';
@@ -620,7 +624,7 @@ async function viewQuote(id) {
       if (q.items.length === 1) { q.items = [newItem()]; } else q.items.splice(i, 1);
       dirty = true; renderRows();
     } else if (act === 'dup') {
-      const c = { ...q.items[i], id: null, status: null, platform_order_id: '', cost: null, shelf: '', variation: '' };
+      const c = { ...q.items[i], id: null, status: null, platform_order_id: '', cost: null, shelf: '', variation: '', variation2: '' };
       q.items.splice(i + 1, 0, c); dirty = true; renderRows(i + 1, 'variation');
     } else if (act === 'fee-auto') {
       q.items[i].fee_manual = 0; dirty = true; renderRows();
@@ -856,7 +860,7 @@ async function viewLookup() {
       view.querySelector('#l-table').innerHTML = `<table class="t"><thead><tr><th style="width:34px"><input type="checkbox" class="cb" id="l-all"></th><th>Món hàng</th><th>Khách · đơn</th><th>Mã đơn sàn</th><th>Ngày</th><th>Trạng thái</th><th class="num">Chờ</th></tr></thead><tbody>
         ${items.map((it) => `<tr class="${sel.has(it.id) ? 'sel' : ''}" data-row="${it.id}">
           <td><input type="checkbox" class="cb" data-cb="${it.id}" ${sel.has(it.id) ? 'checked' : ''}></td>
-          <td><b>${esc(it.name || it.name_vi || '—')}</b>${it.variation ? ` <span class="muted">· ${esc(it.variation)}</span>` : ''}<div class="muted" style="font-size:12.5px">${it.name_vi && it.name ? esc(it.name_vi) + ' · ' : ''}<span class="pill p-${it.platform}" style="font-size:11px">${PLATFORMS[it.platform]}</span> x${it.qty}${it.shelf ? ` · Kệ <b>${esc(it.shelf)}</b>` : ''}</div></td>
+          <td><b>${esc(it.name || it.name_vi || '—')}</b>${vt(it) ? ` <span class="muted">· ${esc(vt(it))}</span>` : ''}<div class="muted" style="font-size:12.5px">${it.name_vi && it.name ? esc(it.name_vi) + ' · ' : ''}<span class="pill p-${it.platform}" style="font-size:11px">${PLATFORMS[it.platform]}</span> x${it.qty}${it.shelf ? ` · Kệ <b>${esc(it.shelf)}</b>` : ''}</div></td>
           <td><a href="#/quote/${it.order_id}"><b>${esc(it.customer_name)}</b></a><div class="muted" style="font-size:12.5px">${esc(it.code)} · về ${it.order_arrived}/${it.order_items}</div></td>
           <td><input class="inline-in" data-poi="${it.id}" value="${esc(it.platform_order_id || '')}" placeholder="dán mã…"></td>
           <td class="nowrap">${fmtDate(it.order_date)}</td>
@@ -864,7 +868,7 @@ async function viewLookup() {
           <td class="num nowrap">${daysSince(it.status_at)} ngày</td></tr>`).join('')}</tbody></table>`;
       view.querySelector('#l-cards').innerHTML = items.map((it) => `<div class="card mc ${sel.has(it.id) ? 'sel' : ''}">
         <div class="top"><div style="min-width:0"><b>${esc(it.customer_name)}</b> <span class="muted">· ${esc(it.code)}</span></div><span class="pill s-${it.status}">${STATUS[it.status]}</span></div>
-        <div style="margin-top:4px">${esc(it.name || it.name_vi || '—')}${it.variation ? ` <span class="muted">· ${esc(it.variation)}</span>` : ''}</div>
+        <div style="margin-top:4px">${esc(it.name || it.name_vi || '—')}${vt(it) ? ` <span class="muted">· ${esc(vt(it))}</span>` : ''}</div>
         <div class="muted" style="font-size:12.5px">${it.name_vi && it.name ? esc(it.name_vi) + ' · ' : ''}${it.platform_order_id ? esc(it.platform_order_id) + ' · ' : ''}${daysSince(it.status_at)} ngày · ${it.order_arrived}/${it.order_items} món đã về</div>
         <div class="acts"><button class="btn" data-one="${it.id}" data-s="arrived" style="color:var(--vio);border-color:#D9C8FA">Hàng về quán</button><button class="btn" data-one="${it.id}" data-s="received" style="color:var(--ok);border-color:#BFE3CF">Khách đã lấy</button></div></div>`).join('');
     }
@@ -1036,7 +1040,7 @@ async function viewPurchase() {
           <span style="display:flex;gap:6px;align-items:center"><span class="muted nowrap" style="font-size:12.5px">đã đặt ${o.order_purchased}/${o.order_items} · còn ${left}</span><span class="pill pay-${o.payment_status}">${PAYMENT[o.payment_status]}</span></span></div>
         ${g.map((it) => `<div class="pg-it ${sel.includes(it.id) ? 'sel' : ''}" data-prow="${it.id}">
           <input type="checkbox" class="cb" data-pi="${it.id}" ${sel.includes(it.id) ? 'checked' : ''} ${off ? 'disabled' : ''}>
-          <div style="min-width:0"><div class="ell"><b>${esc(it.name || it.name_vi || '—')}</b>${it.variation ? ` <span class="muted">· ${esc(it.variation)}</span>` : ''}</div>
+          <div style="min-width:0"><div class="ell"><b>${esc(it.name || it.name_vi || '—')}</b>${vt(it) ? ` <span class="muted">· ${esc(vt(it))}</span>` : ''}</div>
             <div class="muted" style="font-size:12.5px"><span class="pill p-${it.platform}" style="font-size:11px">${PLATFORMS[it.platform]}</span> x${it.qty}${it.name_vi && it.name ? ' · ' + esc(it.name_vi) : ''}</div></div>
           ${it.link ? `<a class="ic" href="${esc(it.link)}" target="_blank" rel="noopener" title="Mở link để đặt">${I.ext}</a>` : '<span></span>'}
           <div class="num"><b>${money(it.price + it.shipping)}</b><div class="muted" style="font-size:11.5px">${it.shipping ? `${money(it.price)} + ship ${money(it.shipping)}` : 'hàng, free ship'}</div></div>
@@ -1077,7 +1081,7 @@ async function viewPurchase() {
       panel.querySelector('#p-save-box').innerHTML = paid ? `<div class="save-box ${save < 0 ? 'neg' : ''}"><span>${save >= 0 ? 'Tiết kiệm nhờ voucher' : 'Trả cao hơn báo giá'}</span><b>${save >= 0 ? '+' : '−'}${money(Math.abs(save))} ₫ <small>${quoted ? Math.round((Math.abs(save) / quoted) * 1000) / 10 : 0}%</small></b></div>` : '';
       const costs = paid ? allocate(paid, chosen.map((i) => i.price + i.shipping)) : [];
       panel.querySelector('#p-alloc').innerHTML = chosen.length ? `<div class="alloc"><div class="l" style="margin:12px 0 4px">Chia tiền thực trả cho từng món</div>
-        ${chosen.map((it, k) => `<div class="alloc-r"><span class="ell">${esc(it.name || it.name_vi || '—')}${it.variation ? ' <span class="muted">· ' + esc(it.variation) + '</span>' : ''}</span><span class="num muted">${money(it.price + it.shipping)}</span><span class="num"><b>${paid ? money(costs[k]) : '—'}</b></span></div>`).join('')}</div>` : '';
+        ${chosen.map((it, k) => `<div class="alloc-r"><span class="ell">${esc(it.name || it.name_vi || '—')}${vt(it) ? ' <span class="muted">· ' + esc(vt(it)) + '</span>' : ''}</span><span class="num muted">${money(it.price + it.shipping)}</span><span class="num"><b>${paid ? money(costs[k]) : '—'}</b></span></div>`).join('')}</div>` : '';
       const mbar = body.querySelector('#p-mbar');
       if (mbar) { mbar.classList.toggle('hidden', !chosen.length); mbar.innerHTML = `<span><b>${chosen.length} món</b> · ${money(quoted)} ₫</span><button class="btn p" data-jump>Nhập tiền thực trả ↓</button>`; }
     };
@@ -1122,7 +1126,7 @@ async function viewPurchase() {
           <div class="pl-h"><div><b>${esc(p.code)}</b> <span class="muted">· ${fmtDate(p.purchased_at)} · ${p.item_count} món${p.platform_order_id ? ' · ' + esc(p.platform_order_id) : ''}${p.note ? ' · ' + esc(p.note) : ''}</span></div>
             <div class="pl-n"><span class="muted">${money(p.quoted_amount)} →</span> <b>${money(p.paid_amount)}</b> <span class="pill ${save >= 0 ? 's-received' : 's-cancelled'}">${save >= 0 ? '+' : '−'}${money(Math.abs(save))}</span>
             <button class="btn sm ghost danger" data-undo="${p.id}" data-code="${esc(p.code)}">Huỷ lượt</button></div></div>
-          ${p.items.map((i) => `<div class="alloc-r"><span class="ell"><a href="#/quote/${i.order_id}"><b>${esc(i.customer_name)}</b></a> <span class="muted">${esc(i.order_code)}</span> · ${esc(i.name || i.name_vi || '—')}${i.variation ? ' <span class="muted">· ' + esc(i.variation) + '</span>' : ''}</span><span class="num muted">${money(i.price + i.shipping)}</span><span class="num"><b>${money(i.cost)}</b></span></div>`).join('')}
+          ${p.items.map((i) => `<div class="alloc-r"><span class="ell"><a href="#/quote/${i.order_id}"><b>${esc(i.customer_name)}</b></a> <span class="muted">${esc(i.order_code)}</span> · ${esc(i.name || i.name_vi || '—')}${vt(i) ? ' <span class="muted">· ' + esc(vt(i)) + '</span>' : ''}</span><span class="num muted">${money(i.price + i.shipping)}</span><span class="num"><b>${money(i.cost)}</b></span></div>`).join('')}
         </div>`;
       }).join('') : '<div class="empty card">Chưa có lượt đặt nào trong tháng này.</div>';
     };

@@ -123,9 +123,10 @@ export const MIGRATIONS = [
   `ALTER TABLE customers ADD COLUMN is_demo INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE orders ADD COLUMN is_demo INTEGER NOT NULL DEFAULT 0`,
   `ALTER TABLE purchases ADD COLUMN is_demo INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE items ADD COLUMN variation2 TEXT`,
 ];
 // bump when SCHEMA or MIGRATIONS change, so the schema check is skipped on normal requests
-export const SCHEMA_VERSION = '3';
+export const SCHEMA_VERSION = '4';
 
 export const DEFAULT_SETTINGS = {
   fees: {

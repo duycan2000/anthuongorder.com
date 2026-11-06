@@ -3,7 +3,7 @@ import { SCHEMA, MIGRATIONS, SCHEMA_VERSION, DEFAULT_SETTINGS } from './schema.j
 import { DEMO_COUNT, planDemoCustomer } from './demo.js';
 import { renderPublicQuote, renderNotFound } from './public-quote.js';
 
-export const APP_VERSION = '0.3.0';
+export const APP_VERSION = '0.3.1';
 
 const PERMS = ['quotes', 'orders', 'settings', 'users'];
 const STATUSES = ['quoted', 'paid', 'ordered', 'arrived', 'received', 'cancelled', 'returned'];
@@ -574,6 +574,7 @@ function cleanItem(raw, i) {
     name: str(raw.name, 400),
     name_vi: str(raw.name_vi, 400),
     variation: str(raw.variation, 200),
+    variation2: str(raw.variation2, 200),
     qty,
     unit_price: unit,
     price: unit * qty,
@@ -587,7 +588,7 @@ function cleanItem(raw, i) {
   };
 }
 const itemSearch = (it, customerName, phone, code) =>
-  normalize([it.name, it.name_vi, it.variation, it.platform_order_id, it.platform, customerName, phone, code].filter(Boolean).join(' | '));
+  normalize([it.name, it.name_vi, it.variation, it.variation2, it.platform_order_id, it.platform, customerName, phone, code].filter(Boolean).join(' | '));
 
 async function nextCode(env, date) {
   const mmdd = date.slice(5, 7) + date.slice(8, 10);
@@ -693,16 +694,16 @@ async function saveOrder(request, env, user, id) {
       keep.add(old.id);
       const statusAt = old.status !== status ? now : old.status_at;
       stmts.push(env.DB.prepare(
-        `UPDATE items SET position=?, link=?, platform=?, name=?, name_vi=?, variation=?, qty=?, unit_price=?, price=?, shipping=?, fee=?, fee_manual=?,
+        `UPDATE items SET position=?, link=?, platform=?, name=?, name_vi=?, variation=?, variation2=?, qty=?, unit_price=?, price=?, shipping=?, fee=?, fee_manual=?,
           status=?, status_at=?, platform_order_id=?, cost=?, shelf=?, search=? WHERE id=? AND order_id=?`
-      ).bind(it.position, it.link, it.platform, it.name, it.name_vi, it.variation, it.qty, it.unit_price, it.price, it.shipping, it.fee, it.fee_manual,
+      ).bind(it.position, it.link, it.platform, it.name, it.name_vi, it.variation, it.variation2, it.qty, it.unit_price, it.price, it.shipping, it.fee, it.fee_manual,
         status, statusAt, it.platform_order_id, old.purchase_id ? old.cost : it.cost, it.shelf, search, old.id, orderId));
       if (old.status !== status) stmts.push(env.DB.prepare('INSERT INTO status_log (item_id, from_status, to_status, user_id, at) VALUES (?, ?, ?, ?, ?)').bind(old.id, old.status, status, user.id, now));
     } else {
       stmts.push(env.DB.prepare(
-        `INSERT INTO items (order_id, position, link, platform, name, name_vi, variation, qty, unit_price, price, shipping, fee, fee_manual,
-          status, status_at, platform_order_id, cost, shelf, search) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
-      ).bind(orderId, it.position, it.link, it.platform, it.name, it.name_vi, it.variation, it.qty, it.unit_price, it.price, it.shipping, it.fee, it.fee_manual,
+        `INSERT INTO items (order_id, position, link, platform, name, name_vi, variation, variation2, qty, unit_price, price, shipping, fee, fee_manual,
+          status, status_at, platform_order_id, cost, shelf, search) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+      ).bind(orderId, it.position, it.link, it.platform, it.name, it.name_vi, it.variation, it.variation2, it.qty, it.unit_price, it.price, it.shipping, it.fee, it.fee_manual,
         status, now, it.platform_order_id, it.cost, it.shelf, search));
     }
   }
@@ -861,7 +862,7 @@ async function getPurchase(env, id) {
   const p = await env.DB.prepare('SELECT * FROM purchases WHERE id = ?').bind(id).first();
   if (!p) throw new HttpError(404, 'Không tìm thấy lượt đặt');
   p.items = (await env.DB.prepare(
-    `SELECT i.id, i.order_id, i.name, i.name_vi, i.variation, i.qty, i.price, i.shipping, i.cost, i.platform, i.status, o.code AS order_code, o.customer_name
+    `SELECT i.id, i.order_id, i.name, i.name_vi, i.variation, i.variation2, i.qty, i.price, i.shipping, i.cost, i.platform, i.status, o.code AS order_code, o.customer_name
      FROM items i JOIN orders o ON o.id = i.order_id WHERE i.purchase_id = ? ORDER BY o.id, i.position`
   ).bind(id).all()).results || [];
   return p;
@@ -876,7 +877,7 @@ async function listPurchases(env, url) {
   if (ps.length) {
     const marks = ps.map(() => '?').join(',');
     const items = (await env.DB.prepare(
-      `SELECT i.id, i.purchase_id, i.order_id, i.name, i.name_vi, i.variation, i.qty, i.price, i.shipping, i.cost, i.platform, i.status, o.code AS order_code, o.customer_name
+      `SELECT i.id, i.purchase_id, i.order_id, i.name, i.name_vi, i.variation, i.variation2, i.qty, i.price, i.shipping, i.cost, i.platform, i.status, o.code AS order_code, o.customer_name
        FROM items i JOIN orders o ON o.id = i.order_id WHERE i.purchase_id IN (${marks}) ORDER BY o.id, i.position`
     ).bind(...ps.map((p) => p.id)).all()).results || [];
     for (const p of ps) p.items = items.filter((i) => i.purchase_id === p.id);
