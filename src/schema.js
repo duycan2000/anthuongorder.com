@@ -120,7 +120,12 @@ export const SCHEMA = [
 export const MIGRATIONS = [
   `ALTER TABLE items ADD COLUMN purchase_id INTEGER`,
   `CREATE INDEX IF NOT EXISTS idx_items_purchase ON items(purchase_id)`,
+  `ALTER TABLE customers ADD COLUMN is_demo INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE orders ADD COLUMN is_demo INTEGER NOT NULL DEFAULT 0`,
+  `ALTER TABLE purchases ADD COLUMN is_demo INTEGER NOT NULL DEFAULT 0`,
 ];
+// bump when SCHEMA or MIGRATIONS change, so the schema check is skipped on normal requests
+export const SCHEMA_VERSION = '3';
 
 export const DEFAULT_SETTINGS = {
   fees: {

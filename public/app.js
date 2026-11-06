@@ -1,7 +1,7 @@
 // An Thuong Order — internal app (vanilla JS SPA)
 import { renderQuoteImages, ensureFonts, canvasToBlob } from './quote-image.js';
 
-const CLIENT_VERSION = '0.2.0';
+const CLIENT_VERSION = '0.3.0';
 const $app = document.getElementById('app');
 
 // ---------------- utils ----------------
@@ -49,6 +49,8 @@ const I = {
   ext: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6M15 3h6v6M10 14L21 3"/></svg>',
   dup: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="8" y="8" width="13" height="13" rx="2"/><path d="M16 8V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h3"/></svg>',
   cart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="21" r="1"/><circle cx="20" cy="21" r="1"/><path d="M1 1h4l2.7 13.4a2 2 0 0 0 2 1.6h9.7a2 2 0 0 0 2-1.6L23 6H6"/></svg>',
+  person: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>',
+  more: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="5" cy="12" r="1.5"/><circle cx="12" cy="12" r="1.5"/><circle cx="19" cy="12" r="1.5"/></svg>',
   share: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/></svg>',
 };
 
@@ -118,6 +120,9 @@ const routes = [
   [/^#\/orders$/, viewOrders, null],
   [/^#\/lookup$/, viewLookup, 'orders'],
   [/^#\/purchase$/, viewPurchase, 'orders'],
+  [/^#\/customers$/, () => viewCustomers(null), null],
+  [/^#\/customers\/(\d+)$/, (m) => viewCustomers(+m[1]), null],
+  [/^#\/more$/, viewMore, null],
   [/^#\/settings$/, viewSettings, 'settings'],
   [/^#\/users$/, viewUsers, 'users'],
   [/^#\/account$/, viewAccount, null],
@@ -166,13 +171,14 @@ function navItems() {
   if (can('orders')) items.push(['#/purchase', 'Đặt hàng', I.cart, 'Đặt hàng']);
   if (can('orders')) items.push(['#/lookup', 'Tra cứu hàng về', I.box, 'Hàng về', state.waitingCount]);
   if (can('orders') || can('quotes')) items.push(['#/orders', 'Đơn hàng', I.list, 'Đơn']);
+  if (can('orders') || can('quotes')) items.push(['#/customers', 'Khách hàng', I.person, 'Khách']);
   if (can('settings')) items.push(['#/settings', 'Cài đặt', I.gear, 'Cài đặt']);
   if (can('users')) items.push(['#/users', 'User & quyền', I.users, 'User']);
   return items;
 }
 function shell(content) {
   const hash = location.hash;
-  const active = (h) => (hash === h || (h === '#/quote/new' && hash.startsWith('#/quote/')) ? 'on' : '');
+  const active = (h) => (hash === h || (h === '#/quote/new' && hash.startsWith('#/quote/')) || (h === '#/customers' && hash.startsWith('#/customers')) ? 'on' : '');
   const nav = navItems();
   const banner = state.me && !state.me.pw_changed
     ? `<div class="banner">Bạn đang dùng mật khẩu mặc định / do admin đặt. <a href="#/account">Đổi mật khẩu ngay</a> để bảo vệ dữ liệu.</div>` : '';
@@ -187,7 +193,7 @@ function shell(content) {
     </aside>
     <main class="main">${banner}<div id="view">${content}</div></main>
     <nav class="bnav">${nav.slice(0, 4).map(([h, , ic, s, b]) => `<a href="${h}" class="${active(h)}">${ic}<span>${s}</span>${b ? `<span class="badge">${b}</span>` : ''}</a>`).join('')}
-      <a href="#/account" class="${active('#/account')}">${I.users}<span>Tôi</span></a></nav>
+      <a href="#/more" class="${['#/more', '#/account', '#/settings', '#/users'].includes(hash) || hash.startsWith('#/customers') ? 'on' : ''}">${I.more}<span>Thêm</span></a></nav>
   </div>`;
   $app.querySelectorAll('[data-logout]').forEach((a) => a.addEventListener('click', async (e) => {
     e.preventDefault();
@@ -305,6 +311,11 @@ async function viewQuote(id) {
     } catch (ex) { view.innerHTML = `<div class="empty">${esc(ex.message)}</div>`; return; }
   } else {
     q = { id: null, code: '', public_id: '', order_date: todayISO(), customer_id: null, customer_name: '', customer_phone: '', payment_status: 'unpaid', note: '', items: [newItem()], payments: [] };
+    try {
+      const pre = JSON.parse(sessionStorage.getItem('at.newfor') || 'null');
+      sessionStorage.removeItem('at.newfor');
+      if (pre) Object.assign(q, { customer_id: pre.id, customer_name: pre.name, customer_phone: pre.phone, customer_note: pre.note });
+    } catch (_) {}
   }
   let dirty = false;
   leaveGuard = () => dirty && (q.items.some((i) => i.name || i.link || i.unit_price) || q.customer_name);
@@ -319,7 +330,8 @@ async function viewQuote(id) {
     <div>
       <div class="card">
         <div class="cust-grid">
-          <div class="ac"><label class="l">Tên khách</label><input class="in" id="c-name" placeholder="Gõ tên để tìm khách cũ…" autocomplete="off" value="${esc(q.customer_name)}"><div class="ac-list hidden"></div></div>
+          <div class="ac"><label class="l">Tên khách ${q.customer_id ? `<a href="#/customers/${q.customer_id}" style="text-transform:none;font-weight:600;margin-left:4px">hồ sơ ↗</a>` : ''}</label><input class="in" id="c-name" placeholder="Gõ tên để tìm khách cũ…" autocomplete="off" value="${esc(q.customer_name)}"><div class="ac-list hidden"></div>
+            <div class="cust-note ${q.customer_note ? '' : 'hidden'}" id="c-note-cust">${esc(q.customer_note || '')}</div></div>
           <div><label class="l">WhatsApp / Phone</label><input class="in" id="c-phone" placeholder="+1 262 277 9077" value="${esc(q.customer_phone)}"></div>
           <div><label class="l">Ngày báo giá</label><input class="in" id="c-date" type="date" value="${esc(q.order_date)}"></div>
           <div><label class="l">Thanh toán</label><div class="in" id="pay-pill" style="display:flex;align-items:center;gap:6px;background:#F7F9F8"></div></div>
@@ -520,7 +532,7 @@ async function viewQuote(id) {
       acItems = r.customers;
       acIdx = acItems.length ? 0 : -1;
       if (!acItems.length) { $ac.classList.add('hidden'); return; }
-      $ac.innerHTML = acItems.map((c, i) => `<div data-ac="${i}" class="${i === acIdx ? 'on' : ''}"><span><b>${esc(c.name)}</b> <small>${esc(c.phone || '')}</small></span><small>${c.orders} đơn</small></div>`).join('');
+      $ac.innerHTML = acItems.map((c, i) => `<div data-ac="${i}" class="${i === acIdx ? 'on' : ''}"><span style="min-width:0"><b>${esc(c.name)}</b> <small>${esc(c.phone || '')}</small>${c.note ? `<small class="ell" style="display:block">${esc(c.note)}</small>` : ''}</span><small>${c.orders} đơn</small></div>`).join('');
       $ac.classList.remove('hidden');
     } catch (_) {}
   }, 180);
@@ -528,6 +540,8 @@ async function viewQuote(id) {
     q.customer_id = c.id; q.customer_name = c.name; q.customer_phone = c.phone || '';
     $name.value = c.name; $phone.value = c.phone || '';
     $ac.classList.add('hidden'); dirty = true; schedulePreview();
+    const cn = view.querySelector('#c-note-cust');
+    cn.textContent = c.note || ''; cn.classList.toggle('hidden', !c.note);
     const first = $rows.querySelector('[data-f="link"]');
     if (first && !first.value) first.focus(); else $phone.focus();
   }
@@ -741,7 +755,8 @@ async function viewQuote(id) {
   if (!editable) view.querySelectorAll('input,select,textarea,#add').forEach((el) => { el.disabled = true; });
   renderRows();
   renderActions();
-  if (!id) $name.focus();
+  if (!id && !q.customer_name) $name.focus();
+  else if (!id) { const f = $rows.querySelector('[data-f="link"]'); if (f) f.focus(); }
 }
 
 // ---------------- orders ----------------
@@ -754,6 +769,8 @@ function progressOf(statuses) {
   const st = order[min];
   const arrived = act.filter((s) => s === 'arrived' || s === 'received').length;
   if (arrived && arrived < act.length) return `<span class="pill s-arrived">Về ${arrived}/${act.length}</span>`;
+  const ordered = act.filter((s) => ['ordered', 'arrived', 'received'].includes(s)).length;
+  if (ordered && ordered < act.length) return `<span class="pill s-ordered">Đã đặt ${ordered}/${act.length}</span>`;
   return `<span class="pill s-${st}">${STATUS[st]}${act.length > 1 ? ` ${act.length}/${act.length}` : ''}</span>`;
 }
 async function viewOrders() {
@@ -979,7 +996,19 @@ async function viewPurchase() {
     });
     load().catch((e) => toast(e.message, 'err'));
   }
+  const custKey = (it) => (it.customer_id ? 'c' + it.customer_id : 'o' + it.order_id);
+  function lockedKey() {
+    const first = items.find((i) => i.id === sel[0]);
+    return first ? custKey(first) : null;
+  }
   function toggle(id, on, silent) {
+    const it = items.find((i) => i.id === id);
+    const lk = lockedKey();
+    if (on && it && lk && custKey(it) !== lk) {
+      toast('Mỗi lượt đặt chỉ gồm món của 1 khách. Ghi lượt hiện tại hoặc bỏ chọn trước.', 'err');
+      renderGroups();
+      return;
+    }
     const k = sel.indexOf(id);
     if (on && k < 0) sel.push(id);
     if (!on && k >= 0) sel.splice(k, 1);
@@ -992,17 +1021,21 @@ async function viewPurchase() {
       box.innerHTML = `<div class="empty card">${withUnpaid ? 'Không có món nào đang chờ đặt.' : 'Không có món nào đã thanh toán đang chờ đặt. Tick “Gồm đơn chưa trả tiền” để xem thêm.'}</div>`;
       return;
     }
+    const lk = lockedKey();
     const groups = new Map();
     for (const it of items) { if (!groups.has(it.order_id)) groups.set(it.order_id, []); groups.get(it.order_id).push(it); }
-    box.innerHTML = [...groups.values()].map((g) => {
+    const list = [...groups.values()].sort((a, b) => (lk ? (custKey(b[0]) === lk) - (custKey(a[0]) === lk) : 0));
+    box.innerHTML = (lk ? `<div class="lock-note">Đang chọn món của <b>${esc(items.find((i) => i.id === sel[0]).customer_name)}</b> — mỗi lượt đặt chỉ 1 khách. <button class="btn sm" data-clear-sel>Bỏ chọn</button></div>` : '') + list.map((g) => {
       const o = g[0];
       const all = g.every((i) => sel.includes(i.id));
-      return `<div class="card pg">
-        <div class="pg-h"><label style="display:flex;gap:10px;align-items:center;min-width:0"><input type="checkbox" class="cb" data-po="${o.order_id}" ${all ? 'checked' : ''}>
+      const off = lk && custKey(o) !== lk;
+      const left = g.length;
+      return `<div class="card pg ${off ? 'off' : ''}">
+        <div class="pg-h"><label style="display:flex;gap:10px;align-items:center;min-width:0"><input type="checkbox" class="cb" data-po="${o.order_id}" ${all ? 'checked' : ''} ${off ? 'disabled' : ''}>
           <span style="min-width:0"><b>${esc(o.customer_name)}</b> <span class="muted">· ${esc(o.code)} · ${fmtDate(o.order_date)}</span></span></label>
-          <span class="pill pay-${o.payment_status}">${PAYMENT[o.payment_status]}</span></div>
+          <span style="display:flex;gap:6px;align-items:center"><span class="muted nowrap" style="font-size:12.5px">đã đặt ${o.order_purchased}/${o.order_items} · còn ${left}</span><span class="pill pay-${o.payment_status}">${PAYMENT[o.payment_status]}</span></span></div>
         ${g.map((it) => `<div class="pg-it ${sel.includes(it.id) ? 'sel' : ''}" data-prow="${it.id}">
-          <input type="checkbox" class="cb" data-pi="${it.id}" ${sel.includes(it.id) ? 'checked' : ''}>
+          <input type="checkbox" class="cb" data-pi="${it.id}" ${sel.includes(it.id) ? 'checked' : ''} ${off ? 'disabled' : ''}>
           <div style="min-width:0"><div class="ell"><b>${esc(it.name || it.name_vi || '—')}</b>${it.variation ? ` <span class="muted">· ${esc(it.variation)}</span>` : ''}</div>
             <div class="muted" style="font-size:12.5px"><span class="pill p-${it.platform}" style="font-size:11px">${PLATFORMS[it.platform]}</span> x${it.qty}${it.name_vi && it.name ? ' · ' + esc(it.name_vi) : ''}</div></div>
           ${it.link ? `<a class="ic" href="${esc(it.link)}" target="_blank" rel="noopener" title="Mở link để đặt">${I.ext}</a>` : '<span></span>'}
@@ -1010,20 +1043,22 @@ async function viewPurchase() {
         </div>`).join('')}
       </div>`;
     }).join('');
+    const clr = box.querySelector('[data-clear-sel]');
+    if (clr) clr.onclick = () => { sel.length = 0; renderGroups(); renderPanel(); };
   }
   function renderPanel() {
     const panel = body.querySelector('#p-panel');
     if (!panel) return;
     const chosen = sel.map((id) => items.find((i) => i.id === id)).filter(Boolean);
     const quoted = chosen.reduce((a, i) => a + i.price + i.shipping, 0);
-    const customers = new Set(chosen.map((i) => i.order_id)).size;
+    const who = chosen.length ? chosen[0].customer_name : '';
     const prevPaid = panel.querySelector('#p-paid') ? panel.querySelector('#p-paid').value : '';
     const prevPoi = panel.querySelector('#p-poi') ? panel.querySelector('#p-poi').value : '';
     const prevNote = panel.querySelector('#p-note') ? panel.querySelector('#p-note').value : '';
     const prevDate = panel.querySelector('#p-date') ? panel.querySelector('#p-date').value : todayISO();
     panel.innerHTML = `
-      <h3>Lượt đặt mới</h3>
-      <div class="muted" style="margin:2px 0 10px">${chosen.length ? `${chosen.length} món · ${customers} đơn khách` : 'Tick các món bạn đang đặt chung 1 lần thanh toán'}</div>
+      <h3>Lượt đặt mới${who ? ` · ${esc(who)}` : ''}</h3>
+      <div class="muted" style="margin:2px 0 10px">${chosen.length ? `${chosen.length} món đang đặt chung 1 lần thanh toán` : 'Chọn 1 khách, tick các món bạn cho vào giỏ Shopee lần này'}</div>
       <div class="kv"><span>Giá trị theo báo giá<br><small class="muted">hàng + ship khách trả</small></span><b style="font-size:18px">${money(quoted)} ₫</b></div>
       <div style="margin-top:10px"><label class="l">Số tiền thực trả trên Shopee / Lazada</label>
         <input class="in money" id="p-paid" inputmode="numeric" placeholder="VD: 1,120,000" value="${esc(prevPaid)}" style="font-size:18px;font-weight:700;min-height:44px" ${chosen.length ? '' : 'disabled'}></div>
@@ -1042,7 +1077,7 @@ async function viewPurchase() {
       panel.querySelector('#p-save-box').innerHTML = paid ? `<div class="save-box ${save < 0 ? 'neg' : ''}"><span>${save >= 0 ? 'Tiết kiệm nhờ voucher' : 'Trả cao hơn báo giá'}</span><b>${save >= 0 ? '+' : '−'}${money(Math.abs(save))} ₫ <small>${quoted ? Math.round((Math.abs(save) / quoted) * 1000) / 10 : 0}%</small></b></div>` : '';
       const costs = paid ? allocate(paid, chosen.map((i) => i.price + i.shipping)) : [];
       panel.querySelector('#p-alloc').innerHTML = chosen.length ? `<div class="alloc"><div class="l" style="margin:12px 0 4px">Chia tiền thực trả cho từng món</div>
-        ${chosen.map((it, k) => `<div class="alloc-r"><span class="ell"><b>${esc(it.customer_name)}</b> · ${esc(it.name || it.name_vi || '—')}</span><span class="num muted">${money(it.price + it.shipping)}</span><span class="num"><b>${paid ? money(costs[k]) : '—'}</b></span></div>`).join('')}</div>` : '';
+        ${chosen.map((it, k) => `<div class="alloc-r"><span class="ell">${esc(it.name || it.name_vi || '—')}${it.variation ? ' <span class="muted">· ' + esc(it.variation) + '</span>' : ''}</span><span class="num muted">${money(it.price + it.shipping)}</span><span class="num"><b>${paid ? money(costs[k]) : '—'}</b></span></div>`).join('')}</div>` : '';
       const mbar = body.querySelector('#p-mbar');
       if (mbar) { mbar.classList.toggle('hidden', !chosen.length); mbar.innerHTML = `<span><b>${chosen.length} món</b> · ${money(quoted)} ₫</span><button class="btn p" data-jump>Nhập tiền thực trả ↓</button>`; }
     };
@@ -1102,6 +1137,104 @@ async function viewPurchase() {
   setTab(tab);
 }
 
+// ---------------- customers ----------------
+function orderProfit(o) {
+  const complete = o.active_count > 0 && o.costed_count === o.active_count;
+  return { complete, profit: complete ? (o.received > 0 ? o.received : o.grand_total) - o.cost_total : null };
+}
+async function viewCustomers(id) {
+  const view = shell('');
+  let list = [];
+  view.innerHTML = `
+    <div class="page-h"><h1>Khách hàng</h1><button class="btn p" id="cu-new">+ Khách mới</button></div>
+    <div class="cu">
+      <div>
+        <div class="toolbar"><div class="search">${I.search}<input class="in" id="cu-q" placeholder="Tìm tên, số điện thoại, ghi chú…"></div></div>
+        <div class="card d-table"><div class="tbl-wrap" id="cu-table"></div></div>
+        <div class="m-cards" id="cu-cards"></div>
+      </div>
+      <div class="cu-detail" id="cu-detail"><div class="card pad muted">Chọn một khách để xem thông tin, ghi chú và lịch sử đơn.</div></div>
+    </div>`;
+  const loadList = async () => {
+    const term = view.querySelector('#cu-q').value.trim();
+    list = (await api('GET', '/customers/list?q=' + encodeURIComponent(term))).customers;
+    const rows = list.map((c) => `<tr class="click ${c.id === id ? 'sel' : ''}" data-c="${c.id}"><td><b>${esc(c.name)}</b>${c.is_demo ? ' <span class="pill s-quoted" style="font-size:10.5px">demo</span>' : ''}<div class="muted ell" style="max-width:260px;font-size:12.5px">${esc(c.note || '')}</div></td>
+      <td class="nowrap">${esc(c.phone || '—')}</td><td class="num">${c.orders}</td><td class="num"><b>${money(c.total)}</b></td><td class="nowrap">${c.last_order ? fmtDate(c.last_order) : '—'}</td></tr>`).join('');
+    view.querySelector('#cu-table').innerHTML = list.length ? `<table class="t"><thead><tr><th>Khách · ghi chú</th><th>WhatsApp</th><th class="num">Đơn</th><th class="num">Tổng mua</th><th>Đơn gần nhất</th></tr></thead><tbody>${rows}</tbody></table>` : '<div class="empty">Chưa có khách nào.</div>';
+    view.querySelector('#cu-cards').innerHTML = list.map((c) => `<div class="card mc click" data-c="${c.id}"><div class="top"><div style="min-width:0"><b>${esc(c.name)}</b><div class="muted">${esc(c.phone || '')}</div></div><div class="num"><b>${money(c.total)}</b><div class="muted">${c.orders} đơn</div></div></div>${c.note ? `<div class="muted ell" style="margin-top:4px">${esc(c.note)}</div>` : ''}</div>`).join('') || '<div class="empty card">Chưa có khách nào.</div>';
+  };
+  const loadDetail = async (cid) => {
+    const box = view.querySelector('#cu-detail');
+    if (!cid) return;
+    const r = await api('GET', '/customers/' + cid);
+    const c = r.customer;
+    const os = r.orders;
+    const total = os.reduce((a, o) => a + o.grand_total, 0);
+    const recv = os.reduce((a, o) => a + o.received, 0);
+    const profits = os.map(orderProfit);
+    const profit = profits.reduce((a, p) => a + (p.complete ? p.profit : 0), 0);
+    const wa = waDigits(c.phone);
+    box.innerHTML = `<div class="card pad">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;margin-bottom:10px"><h3 style="font-size:17px">${esc(c.name)}</h3>
+        <span style="display:flex;gap:6px">${wa ? `<a class="btn sm wa" href="https://wa.me/${wa}" target="_blank" rel="noopener">${I.wa} WhatsApp</a>` : ''}${can('quotes') ? `<a class="btn sm" href="#/quote/new" data-newfor="${c.id}">+ Báo giá</a>` : ''}</span></div>
+      <div class="grid">
+        <div class="form-grid"><div><label class="l">Tên khách</label><input class="in" id="cd-name" value="${esc(c.name)}"></div>
+        <div><label class="l">WhatsApp / Phone</label><input class="in" id="cd-phone" value="${esc(c.phone || '')}"></div></div>
+        <div><label class="l">Ghi chú về khách (chỉ nội bộ, hiện khi tạo báo giá)</label><textarea class="in" id="cd-note" placeholder="VD: thích trả Wise, ở khách sạn X phòng 1203, hay đổi màu…">${esc(c.note || '')}</textarea></div>
+        <button class="btn p" id="cd-save" style="justify-self:start">Lưu thông tin khách</button>
+      </div>
+      <div class="stats" style="grid-template-columns:repeat(3,1fr);margin:16px 0 10px">
+        <div class="card stat"><div class="l">Tổng mua</div><div class="v" style="font-size:17px">${money(total)}</div><div class="muted" style="font-size:12px">${os.length} đơn</div></div>
+        <div class="card stat"><div class="l">Đã trả</div><div class="v" style="font-size:17px">${money(recv)}</div></div>
+        <div class="card stat"><div class="l">Lãi (đơn đã đặt đủ)</div><div class="v" style="font-size:17px;color:${profit < 0 ? 'var(--red)' : 'var(--g)'}">${money(profit)}</div></div>
+      </div>
+      <div class="l" style="margin-top:6px">Lịch sử đơn</div>
+      ${os.length ? `<table class="t"><tbody>${os.map((o, i) => `<tr class="click" data-o="${o.id}"><td><b>${esc(o.code)}</b><div class="muted">${fmtDate(o.order_date)} · ${o.item_count} món</div></td><td>${progressOf(o.statuses)}</td><td class="num"><b>${money(o.grand_total)}</b><div class="muted" style="font-size:12px">${profits[i].complete ? 'lãi ' + money(profits[i].profit) : o.costed_count + '/' + o.active_count + ' đặt'}</div></td></tr>`).join('')}</tbody></table>` : '<div class="muted">Chưa có đơn.</div>'}
+    </div>`;
+    box.querySelector('#cd-save').onclick = async () => {
+      try {
+        await api('PUT', '/customers/' + cid, { name: box.querySelector('#cd-name').value, phone: box.querySelector('#cd-phone').value, note: box.querySelector('#cd-note').value });
+        toast('Đã lưu thông tin khách', 'ok'); await loadList(); await loadDetail(cid);
+      } catch (e) { toast(e.message, 'err'); }
+    };
+    const nf = box.querySelector('[data-newfor]');
+    if (nf) nf.onclick = () => { sessionStorage.setItem('at.newfor', JSON.stringify({ id: c.id, name: c.name, phone: c.phone || '', note: c.note || '' })); };
+    if (matchMedia('(max-width:960px)').matches) box.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  };
+  view.addEventListener('click', (e) => {
+    const o = e.target.closest('[data-o]'); if (o) { location.hash = '#/quote/' + o.dataset.o; return; }
+    const r = e.target.closest('[data-c]');
+    if (r) { id = +r.dataset.c; history.replaceState(null, '', '#/customers/' + id); view.querySelectorAll('[data-c]').forEach((x) => x.classList.toggle('sel', +x.dataset.c === id)); loadDetail(id).catch((x) => toast(x.message, 'err')); }
+  });
+  view.querySelector('#cu-q').addEventListener('input', debounce(() => loadList().catch((x) => toast(x.message, 'err')), 220));
+  view.querySelector('#cu-new').onclick = () => modal(`<h3>Thêm khách mới</h3>
+    <div class="grid"><div><label class="l">Tên khách</label><input class="in" name="name"></div><div><label class="l">WhatsApp / Phone</label><input class="in" name="phone"></div>
+    <div><label class="l">Ghi chú</label><textarea class="in" name="note"></textarea></div></div>
+    <div class="actions"><button class="btn" data-close>Huỷ</button><button class="btn p" data-ok>Thêm khách</button></div>`, (m, close) => {
+    m.querySelector('[name=name]').focus();
+    m.querySelector('[data-ok]').onclick = async () => {
+      try {
+        const r = await api('POST', '/customers', { name: m.querySelector('[name=name]').value, phone: m.querySelector('[name=phone]').value, note: m.querySelector('[name=note]').value });
+        close(); id = r.customer.id; history.replaceState(null, '', '#/customers/' + id); await loadList(); await loadDetail(id); toast('Đã thêm khách', 'ok');
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
+  await loadList().catch((x) => toast(x.message, 'err'));
+  if (id) await loadDetail(id).catch((x) => toast(x.message, 'err'));
+}
+
+// ---------------- more (mobile menu) ----------------
+async function viewMore() {
+  const view = shell('');
+  const links = navItems();
+  view.innerHTML = `<div class="page-h"><h1>Menu</h1></div>
+    <div class="card more">${links.map(([h, l, ic]) => `<a href="${h}">${ic}<span>${l}</span><b>›</b></a>`).join('')}
+      <a href="#/account">${I.person}<span>Tài khoản · đổi mật khẩu</span><b>›</b></a>
+      <a href="#" data-logout>${I.ext}<span>Đăng xuất</span><b>›</b></a></div>
+    <p class="muted" style="text-align:center;margin-top:16px;font-size:12px">An Thuong Order · phiên bản ${esc(state.serverVersion || CLIENT_VERSION)}</p>`;
+  view.querySelector('[data-logout]').onclick = async (e) => { e.preventDefault(); await api('POST', '/logout').catch(() => {}); state.me = null; location.hash = '#/login'; };
+}
+
 // ---------------- settings ----------------
 async function viewSettings() {
   const view = shell('');
@@ -1126,7 +1259,36 @@ async function viewSettings() {
         ${shopField('footer', 'Dòng cuối', 'We order after payment and message you when it arrives.')}
         ${shopField('wise', 'Thông tin Wise (hiện trên trang báo giá)', 'Wisetag @… hoặc tên + số tài khoản nhận', true)}
         ${shopField('public_base', 'Tên miền link báo giá (để trống = tên miền app)', 'https://app.anthuongorder.com')}
-      </div></div>`;
+      </div></div>
+    ${can('users') ? `<div class="card pad" style="margin-top:14px" id="demo-box"><h3 style="margin-bottom:6px">Dữ liệu demo</h3>
+      <p class="muted" style="margin-bottom:10px">Tạo 30 khách mẫu với đơn hàng ở nhiều giai đoạn (mới báo giá, đã trả tiền, đặt từng lượt, hàng về, khách đã lấy) để xem thử app. Dữ liệu demo được đánh dấu riêng và xoá được bất cứ lúc nào, không ảnh hưởng đơn thật.</p>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap"><button class="btn p" id="demo-make">Tạo dữ liệu demo (30 khách)</button><button class="btn danger" id="demo-del">Xoá dữ liệu demo</button><span class="muted" id="demo-status"></span></div>
+      <div class="bar hidden" id="demo-bar"><i style="width:0%"></i></div></div>` : ''}`;
+  const demoBox = view.querySelector('#demo-box');
+  if (demoBox) {
+    const status = demoBox.querySelector('#demo-status');
+    const refresh = async () => { const r = await api('GET', '/demo'); status.textContent = r.count ? `Đang có ${r.count} đơn demo` : 'Chưa có dữ liệu demo'; };
+    refresh().catch(() => {});
+    demoBox.querySelector('#demo-make').onclick = async (e) => {
+      const btn = e.currentTarget; btn.disabled = true;
+      const bar = demoBox.querySelector('#demo-bar'); bar.classList.remove('hidden');
+      const seed = Math.floor(Math.random() * 1e6) + 1;
+      try {
+        for (let i = 0; i < 30; i++) {
+          const r = await api('POST', '/demo', { index: i, seed });
+          bar.firstElementChild.style.width = ((i + 1) / 30) * 100 + '%';
+          status.textContent = `Đang tạo ${i + 1}/30 · ${r.customer} (${r.items} món)`;
+        }
+        toast('Đã tạo dữ liệu demo cho 30 khách. Xem ở Đơn hàng, Đặt hàng, Hàng về, Khách hàng.', 'ok', 6000);
+        refreshWaiting();
+      } catch (x) { toast(x.message, 'err'); }
+      btn.disabled = false; refresh();
+    };
+    demoBox.querySelector('#demo-del').onclick = async () => {
+      if (!confirm('Xoá toàn bộ dữ liệu demo? Đơn thật không bị ảnh hưởng.')) return;
+      try { await api('DELETE', '/demo'); toast('Đã xoá dữ liệu demo', 'ok'); refresh(); refreshWaiting(); } catch (x) { toast(x.message, 'err'); }
+    };
+  }
   view.querySelector('#s-save').onclick = async () => {
     const fees = JSON.parse(JSON.stringify(s.fees));
     view.querySelectorAll('[data-fee]').forEach((el) => { const [k, f] = el.dataset.fee.split('.'); fees[k][f] = parseMoney(el.value); });

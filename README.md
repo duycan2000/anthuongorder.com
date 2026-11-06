@@ -2,7 +2,7 @@
 
 App nội bộ cho **An Thuong Order @ Linz Coffee**. Chạy trên **Cloudflare Workers + D1**, không cần build, không có dependency.
 
-**Phiên bản:** 0.2.0 (hiện ở màn đăng nhập)
+**Phiên bản:** 0.3.0 (hiện ở màn đăng nhập)
 
 ## Tính năng bản 0.1.0
 - Đăng nhập bằng username/mật khẩu (PBKDF2, khoá 15 phút sau 5 lần sai), phiên 30 ngày.
@@ -13,6 +13,9 @@ App nội bộ cho **An Thuong Order @ Linz Coffee**. Chạy trên **Cloudflare 
 - **Link báo giá cho khách** `/q/XXXXXX`: trang mobile-first tiếng Anh, hiện tiến độ từng món (Paid → Ordered → Arrived → Picked up), cách trả tiền (tiền mặt, Wise).
 - **Tra cứu hàng về**: tìm theo tên hàng (có/không dấu), mã đơn Shopee, tên/số khách; đổi trạng thái nhiều món (`A` = về quán, `R` = khách lấy); nhắn báo khách qua WhatsApp.
 - **Đơn hàng** theo tháng, **Cài đặt** phí & thông tin in trên ảnh.
+- **Tiền khách trả** (tiền mặt / Wise / chuyển khoản), **Đặt hàng** theo lượt (mỗi lượt 1 khách, chia tiền thực trả theo tỉ lệ giá báo), **lãi lỗ** theo đơn, khách, tháng.
+- **Khách hàng**: số điện thoại, ghi chú nội bộ (hiện khi tạo báo giá), lịch sử đơn, tổng mua, lãi.
+- **Dữ liệu demo**: Cài đặt → Tạo dữ liệu demo (30 khách) / Xoá dữ liệu demo.
 
 ## Deploy lên Cloudflare (làm 1 lần)
 1. GitHub → repo → **Settings → General → Danger Zone → Change visibility → Private**.

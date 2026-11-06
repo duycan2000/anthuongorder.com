@@ -1,8 +1,9 @@
 // An Thuong Order — internal app on Cloudflare Workers + D1.
-import { SCHEMA, MIGRATIONS, DEFAULT_SETTINGS } from './schema.js';
+import { SCHEMA, MIGRATIONS, SCHEMA_VERSION, DEFAULT_SETTINGS } from './schema.js';
+import { DEMO_COUNT, planDemoCustomer } from './demo.js';
 import { renderPublicQuote, renderNotFound } from './public-quote.js';
 
-export const APP_VERSION = '0.2.0';
+export const APP_VERSION = '0.3.0';
 
 const PERMS = ['quotes', 'orders', 'settings', 'users'];
 const STATUSES = ['quoted', 'paid', 'ordered', 'arrived', 'received', 'cancelled', 'returned'];
@@ -109,6 +110,10 @@ async function verifyPassword(password, stored) {
 
 // ---------- schema & settings ----------
 async function ensureSchema(env) {
+  try {
+    const v = await env.DB.prepare("SELECT value FROM settings WHERE key = 'schema_version'").first();
+    if (v && v.value === SCHEMA_VERSION) return;
+  } catch (_) { /* first run: tables do not exist yet */ }
   await env.DB.batch(SCHEMA.map((s) => env.DB.prepare(s)));
   for (const m of MIGRATIONS) {
     try { await env.DB.prepare(m).run(); } catch (_) { /* already applied */ }
@@ -121,6 +126,7 @@ async function ensureSchema(env) {
        VALUES (?, ?, ?, 'admin', ?, 1, 0, ?)`
     ).bind(INITIAL_ADMIN.username, INITIAL_ADMIN.display_name, hash, JSON.stringify(PERMS), nowIso()).run();
   }
+  await env.DB.prepare("INSERT OR REPLACE INTO settings (key, value) VALUES ('schema_version', ?)").bind(SCHEMA_VERSION).run();
 }
 
 async function getSettings(env) {
@@ -244,7 +250,22 @@ async function handleApi(request, env, url) {
   }
 
   // customers
-  if (path === '/api/customers' && method === 'GET') { need(user, 'quotes'); return searchCustomers(env, url); }
+  if (path === '/api/customers' && method === 'GET') { needAny(user, ['quotes', 'orders']); return searchCustomers(env, url); }
+  if (seg[0] === 'customers') {
+    needAny(user, ['quotes', 'orders']);
+    if (seg.length === 2 && seg[1] === 'list' && method === 'GET') return listCustomers(env, url);
+    if (seg.length === 1 && method === 'POST') return createCustomer(request, env);
+    if (seg.length === 2 && method === 'GET') return getCustomer(env, int(seg[1]));
+    if (seg.length === 2 && method === 'PUT') return updateCustomer(request, env, int(seg[1]));
+  }
+
+  // demo data (admin)
+  if (seg[0] === 'demo') {
+    need(user, 'users');
+    if (method === 'GET') return json({ count: (await env.DB.prepare('SELECT COUNT(*) AS n FROM orders WHERE is_demo = 1').first()).n, total: DEMO_COUNT });
+    if (method === 'POST') return createDemo(request, env, user);
+    if (method === 'DELETE') return deleteDemo(env);
+  }
 
   // orders
   if (seg[0] === 'orders') {
@@ -371,6 +392,138 @@ async function searchCustomers(env, url) {
   return json({ customers: rows || [] });
 }
 
+async function listCustomers(env, url) {
+  const q = normalize(url.searchParams.get('q') || '');
+  const digits = q.replace(/\D/g, '');
+  const args = [];
+  let where = '';
+  if (q) {
+    where = 'WHERE (c.search LIKE ?' + (digits.length >= 3 ? ' ' + PHONE_LIKE : '') + ' OR LOWER(c.note) LIKE ?)';
+    args.push(`%${q}%`);
+    if (digits.length >= 3) args.push(`%${digits}%`);
+    args.push(`%${q}%`);
+  }
+  const rows = (await env.DB.prepare(
+    `SELECT c.*, COUNT(o.id) AS orders, COALESCE(SUM(o.grand_total),0) AS total, MAX(o.order_date) AS last_order,
+       (SELECT COALESCE(SUM(p.amount),0) FROM payments p JOIN orders o2 ON o2.id = p.order_id WHERE o2.customer_id = c.id) AS received
+     FROM customers c LEFT JOIN orders o ON o.customer_id = c.id ${where}
+     GROUP BY c.id ORDER BY COALESCE(MAX(o.order_date), substr(c.created_at,1,10)) DESC, c.id DESC LIMIT 500`
+  ).bind(...args).all()).results || [];
+  return json({ customers: rows });
+}
+async function getCustomer(env, id) {
+  const c = await env.DB.prepare('SELECT * FROM customers WHERE id = ?').bind(id).first();
+  if (!c) throw new HttpError(404, 'Không tìm thấy khách');
+  const orders = (await env.DB.prepare(
+    `SELECT o.*,
+      (SELECT COUNT(*) FROM items i WHERE i.order_id = o.id) AS item_count,
+      (SELECT GROUP_CONCAT(status) FROM items i WHERE i.order_id = o.id) AS statuses,
+      (SELECT COALESCE(SUM(amount),0) FROM payments p WHERE p.order_id = o.id) AS received,
+      (SELECT COALESCE(SUM(cost),0) FROM items i WHERE i.order_id = o.id AND i.status NOT IN ('cancelled','returned')) AS cost_total,
+      (SELECT COUNT(*) FROM items i WHERE i.order_id = o.id AND i.status NOT IN ('cancelled','returned')) AS active_count,
+      (SELECT COUNT(*) FROM items i WHERE i.order_id = o.id AND i.status NOT IN ('cancelled','returned') AND i.cost IS NOT NULL) AS costed_count
+     FROM orders o WHERE o.customer_id = ? ORDER BY o.order_date DESC, o.id DESC`
+  ).bind(id).all()).results || [];
+  return json({ customer: c, orders });
+}
+async function createCustomer(request, env) {
+  const b = await readJson(request);
+  const name = str(b.name, 120);
+  if (!name) throw bad('Nhập tên khách');
+  const phone = str(b.phone, 40);
+  const now = nowIso();
+  const r = await env.DB.prepare('INSERT INTO customers (name, phone, note, search, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)')
+    .bind(name, phone, str(b.note, 1000), normalize(name + ' ' + phone), now, now).run();
+  return getCustomer(env, r.meta.last_row_id);
+}
+async function updateCustomer(request, env, id) {
+  const b = await readJson(request);
+  const c = await env.DB.prepare('SELECT * FROM customers WHERE id = ?').bind(id).first();
+  if (!c) throw new HttpError(404, 'Không tìm thấy khách');
+  const name = b.name !== undefined ? str(b.name, 120) : c.name;
+  if (!name) throw bad('Tên khách không được trống');
+  const phone = b.phone !== undefined ? str(b.phone, 40) : c.phone;
+  const note = b.note !== undefined ? str(b.note, 1000) : c.note;
+  const stmts = [
+    env.DB.prepare('UPDATE customers SET name = ?, phone = ?, note = ?, search = ?, updated_at = ? WHERE id = ?').bind(name, phone, note, normalize(name + ' ' + phone), nowIso(), id),
+  ];
+  if (name !== c.name || phone !== c.phone) {
+    stmts.push(env.DB.prepare('UPDATE orders SET customer_name = ?, customer_phone = ? WHERE customer_id = ?').bind(name, phone, id));
+  }
+  await env.DB.batch(stmts);
+  if (name !== c.name || phone !== c.phone) {
+    // refresh item search text so lookup finds the new name / phone
+    const its = (await env.DB.prepare('SELECT i.*, o.code FROM items i JOIN orders o ON o.id = i.order_id WHERE o.customer_id = ?').bind(id).all()).results || [];
+    if (its.length) await env.DB.batch(its.map((it) => env.DB.prepare('UPDATE items SET search = ? WHERE id = ?').bind(itemSearch(it, name, phone, it.code), it.id)));
+  }
+  return getCustomer(env, id);
+}
+
+// ---------- demo data ----------
+async function createDemo(request, env, user) {
+  const b = await readJson(request);
+  const idx = Math.max(0, Math.min(DEMO_COUNT - 1, int(b.index)));
+  const seed = int(b.seed, 1) || 1;
+  const settings = await getSettings(env);
+  const today = todayVN();
+  const plan = planDemoCustomer(idx, seed, settings.fees, today);
+  const now = nowIso();
+  const cr = await env.DB.prepare('INSERT INTO customers (name, phone, note, search, created_at, updated_at, is_demo) VALUES (?, ?, ?, ?, ?, ?, 1)')
+    .bind(plan.name, plan.phone, plan.note, normalize(plan.name + ' ' + plan.phone), now, now).run();
+  const customerId = cr.meta.last_row_id;
+  const code = await nextCode(env, plan.date);
+  const publicId = randomId(7);
+  const products = plan.items.reduce((a, i) => a + i.price, 0);
+  const shipping = plan.items.reduce((a, i) => a + i.shipping, 0);
+  const fees = plan.items.reduce((a, i) => a + i.fee, 0);
+  const payStatus = plan.payment ? plan.payment.method : 'unpaid';
+  const orr = await env.DB.prepare(
+    `INSERT INTO orders (code, public_id, customer_id, customer_name, customer_phone, order_date, payment_status, note,
+      products_total, shipping_total, fee_total, grand_total, created_by, created_at, updated_at, is_demo)
+     VALUES (?, ?, ?, ?, ?, ?, ?, '', ?, ?, ?, ?, ?, ?, ?, 1)`
+  ).bind(code, publicId, customerId, plan.name, plan.phone, plan.date, payStatus, products, shipping, fees, products + shipping + fees, user.id, now, now).run();
+  const orderId = orr.meta.last_row_id;
+  const purchaseOf = new Map();
+  const costOf = new Map();
+  for (const bl of plan.blocks) {
+    const pcode = await nextPurchaseCode(env, bl.purchased_at);
+    const pr = await env.DB.prepare(
+      `INSERT INTO purchases (code, platform, platform_order_id, purchased_at, quoted_amount, paid_amount, item_count, note, user_id, created_at, is_demo)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`
+    ).bind(pcode, plan.items[bl.idxs[0]].platform, bl.platform_order_id, bl.purchased_at, bl.quoted, bl.paid, bl.idxs.length, bl.note, user.id, now).run();
+    const costs = allocate(bl.paid, bl.idxs.map((k) => plan.items[k].price + plan.items[k].shipping));
+    bl.idxs.forEach((k, j) => { purchaseOf.set(k, { id: pr.meta.last_row_id, poi: bl.platform_order_id }); costOf.set(k, costs[j]); });
+  }
+  const stmts = plan.items.map((it, k) => {
+    const pu = purchaseOf.get(k);
+    const poi = pu ? pu.poi : '';
+    return env.DB.prepare(
+      `INSERT INTO items (order_id, position, link, platform, name, name_vi, variation, qty, unit_price, price, shipping, fee, fee_manual,
+        status, status_at, platform_order_id, cost, shelf, search, purchase_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0,?,?,?,?,?,?,?)`
+    ).bind(orderId, k, it.link, it.platform, it.name, it.name_vi, it.variation, it.qty, it.unit_price, it.price, it.shipping, it.fee,
+      plan.statusOf[k], plan.statusAt[k] + 'T09:00:00.000Z', poi, costOf.has(k) ? costOf.get(k) : null,
+      plan.statusOf[k] === 'arrived' ? 'D' + (1 + (k % 6)) : '', itemSearch({ ...it, platform_order_id: poi }, plan.name, plan.phone, code), pu ? pu.id : null);
+  });
+  if (plan.payment) {
+    stmts.push(env.DB.prepare('INSERT INTO payments (order_id, amount, method, received_at, note, user_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)')
+      .bind(orderId, plan.payment.amount, plan.payment.method, plan.payment.received_at, plan.payment.amount > products + shipping + fees ? 'làm tròn' : '', user.id, now));
+  }
+  await env.DB.batch(stmts);
+  return json({ ok: true, index: idx, customer: plan.name, code, items: plan.items.length });
+}
+
+async function deleteDemo(env) {
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM status_log WHERE item_id IN (SELECT i.id FROM items i JOIN orders o ON o.id = i.order_id WHERE o.is_demo = 1)'),
+    env.DB.prepare('DELETE FROM items WHERE order_id IN (SELECT id FROM orders WHERE is_demo = 1)'),
+    env.DB.prepare('DELETE FROM payments WHERE order_id IN (SELECT id FROM orders WHERE is_demo = 1)'),
+    env.DB.prepare('DELETE FROM orders WHERE is_demo = 1'),
+    env.DB.prepare('DELETE FROM purchases WHERE is_demo = 1'),
+    env.DB.prepare('DELETE FROM customers WHERE is_demo = 1 AND id NOT IN (SELECT customer_id FROM orders WHERE customer_id IS NOT NULL)'),
+  ]);
+  return json({ ok: true });
+}
+
 // ---------- orders ----------
 async function loadOrder(env, id) {
   const order = await env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(id).first();
@@ -379,6 +532,10 @@ async function loadOrder(env, id) {
     'SELECT i.*, p.code AS purchase_code, p.purchased_at AS purchased_at FROM items i LEFT JOIN purchases p ON p.id = i.purchase_id WHERE i.order_id = ? ORDER BY i.position, i.id'
   ).bind(id).all()).results || [];
   const payments = (await env.DB.prepare('SELECT * FROM payments WHERE order_id = ? ORDER BY received_at, id').bind(id).all()).results || [];
+  if (order.customer_id) {
+    const c = await env.DB.prepare('SELECT note FROM customers WHERE id = ?').bind(order.customer_id).first();
+    order.customer_note = c ? c.note || '' : '';
+  }
   return { order, items, payments };
 }
 
@@ -628,7 +785,9 @@ async function listPurchasable(env, url) {
   let where = `i.purchase_id IS NULL AND i.status IN (${withUnpaid ? "'quoted','paid'" : "'paid'"})`;
   if (q) { where += ' AND i.search LIKE ?'; args.push(`%${q}%`); }
   const rows = (await env.DB.prepare(
-    `SELECT i.*, o.code, o.customer_name, o.customer_phone, o.order_date, o.payment_status
+    `SELECT i.*, o.code, o.customer_id, o.customer_name, o.customer_phone, o.order_date, o.payment_status,
+       (SELECT COUNT(*) FROM items x WHERE x.order_id = o.id AND x.status NOT IN ('cancelled','returned')) AS order_items,
+       (SELECT COUNT(*) FROM items x WHERE x.order_id = o.id AND x.purchase_id IS NOT NULL) AS order_purchased
      FROM items i JOIN orders o ON o.id = i.order_id WHERE ${where}
      ORDER BY o.order_date, o.id, i.position LIMIT 400`
   ).bind(...args).all()).results || [];
@@ -664,9 +823,10 @@ async function createPurchase(request, env, user) {
   if (!(paid > 0)) throw bad('Nhập số tiền thực trả');
   const marks = ids.map(() => '?').join(',');
   const rows = (await env.DB.prepare(
-    `SELECT i.*, o.customer_name, o.customer_phone, o.code AS order_code FROM items i JOIN orders o ON o.id = i.order_id WHERE i.id IN (${marks})`
+    `SELECT i.*, o.customer_id, o.customer_name, o.customer_phone, o.code AS order_code, o.is_demo FROM items i JOIN orders o ON o.id = i.order_id WHERE i.id IN (${marks})`
   ).bind(...ids).all()).results || [];
   if (rows.length !== ids.length) throw bad('Một số món không còn tồn tại');
+  if (new Set(rows.map((r) => r.customer_id || 'o' + r.order_id)).size > 1) throw bad('Mỗi lượt đặt chỉ gồm món của 1 khách');
   if (rows.some((r) => r.purchase_id)) throw bad('Một số món đã nằm trong lượt đặt khác');
   if (rows.some((r) => ['cancelled', 'returned'].includes(r.status))) throw bad('Không thể đặt món đã huỷ / trả hàng');
   // keep the order the user sees

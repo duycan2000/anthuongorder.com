@@ -209,6 +209,18 @@ table.t tr.sel td{background:var(--gll)}
 .pl-n{display:flex;align-items:center;gap:8px;font-variant-numeric:tabular-nums}
 .pq-mbar{display:none}
 
+/* customers */
+.cu{display:grid;grid-template-columns:minmax(0,1fr) 460px;gap:18px;align-items:start}
+.cu-detail{position:sticky;top:16px}
+.cust-note{margin-top:6px;background:var(--warnl);color:#7A4A00;border-radius:8px;padding:6px 9px;font-size:12.5px;font-weight:500}
+.lock-note{display:flex;align-items:center;gap:10px;flex-wrap:wrap;background:var(--gll);border:1px solid #C5DDD3;border-radius:12px;padding:9px 12px;margin-bottom:12px}
+.pg.off{opacity:.45}
+.pg.off .pg-it{cursor:not-allowed}
+.more a{display:flex;align-items:center;gap:12px;padding:14px 16px;border-bottom:1px solid var(--line2);text-decoration:none;color:var(--ink);font-weight:600}
+.more a:last-child{border-bottom:0}
+.more a svg{width:20px;height:20px;color:var(--g)}
+.more a b{margin-left:auto;color:var(--mut);font-size:18px}
+
 /* ---------- responsive ---------- */
 @media (max-width:1180px){
   .qe{grid-template-columns:minmax(0,1fr) 280px}
@@ -244,6 +256,8 @@ table.t tr.sel td{background:var(--gll)}
   .row-it .r3 .idx{display:none}
   .qe-bottom{grid-template-columns:1fr}
   .money-grid{grid-template-columns:1fr}
+  .cu{grid-template-columns:1fr}
+  .cu-detail{position:static}
   .pq{grid-template-columns:1fr}
   .pq-panel{position:static}
   .pg-it{grid-template-columns:22px minmax(0,1fr) 28px 96px}
