@@ -1,0 +1,111 @@
+// Database schema for Cloudflare D1 (SQLite).
+// Each statement runs on its own; all are idempotent (IF NOT EXISTS).
+export const SCHEMA = [
+  `CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT NOT NULL UNIQUE COLLATE NOCASE,
+    display_name TEXT,
+    pass_hash TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'staff',
+    perms TEXT NOT NULL DEFAULT '[]',
+    active INTEGER NOT NULL DEFAULT 1,
+    pw_changed INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL,
+    last_login TEXT
+  )`,
+  `CREATE TABLE IF NOT EXISTS sessions (
+    token TEXT PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS login_attempts (
+    key TEXT PRIMARY KEY,
+    count INTEGER NOT NULL,
+    first_at INTEGER NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS customers (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    phone TEXT,
+    note TEXT,
+    search TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT
+  )`,
+  `CREATE TABLE IF NOT EXISTS orders (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    code TEXT NOT NULL UNIQUE,
+    public_id TEXT NOT NULL UNIQUE,
+    customer_id INTEGER,
+    customer_name TEXT,
+    customer_phone TEXT,
+    order_date TEXT NOT NULL,
+    payment_status TEXT NOT NULL DEFAULT 'unpaid',
+    note TEXT,
+    products_total INTEGER NOT NULL DEFAULT 0,
+    shipping_total INTEGER NOT NULL DEFAULT 0,
+    fee_total INTEGER NOT NULL DEFAULT 0,
+    grand_total INTEGER NOT NULL DEFAULT 0,
+    created_by INTEGER,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS items (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    order_id INTEGER NOT NULL,
+    position INTEGER NOT NULL DEFAULT 0,
+    link TEXT,
+    platform TEXT NOT NULL DEFAULT 'shopee',
+    name TEXT,
+    name_vi TEXT,
+    variation TEXT,
+    qty INTEGER NOT NULL DEFAULT 1,
+    unit_price INTEGER NOT NULL DEFAULT 0,
+    price INTEGER NOT NULL DEFAULT 0,
+    shipping INTEGER NOT NULL DEFAULT 0,
+    fee INTEGER NOT NULL DEFAULT 0,
+    fee_manual INTEGER NOT NULL DEFAULT 0,
+    status TEXT NOT NULL DEFAULT 'quoted',
+    status_at TEXT,
+    platform_order_id TEXT,
+    cost INTEGER,
+    shelf TEXT,
+    search TEXT
+  )`,
+  `CREATE TABLE IF NOT EXISTS status_log (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    item_id INTEGER NOT NULL,
+    from_status TEXT,
+    to_status TEXT NOT NULL,
+    user_id INTEGER,
+    at TEXT NOT NULL
+  )`,
+  `CREATE TABLE IF NOT EXISTS settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  )`,
+  `CREATE INDEX IF NOT EXISTS idx_items_order ON items(order_id)`,
+  `CREATE INDEX IF NOT EXISTS idx_items_status ON items(status)`,
+  `CREATE INDEX IF NOT EXISTS idx_orders_date ON orders(order_date)`,
+  `CREATE INDEX IF NOT EXISTS idx_customers_phone ON customers(phone)`,
+];
+
+export const DEFAULT_SETTINGS = {
+  fees: {
+    shopee: { first: 25000, add: 15000, ship: 0 },
+    lazada: { first: 35000, add: 15000, ship: 0 },
+    tiki: { first: 35000, add: 15000, ship: 0 },
+    other: { first: 35000, add: 15000, ship: 0 },
+  },
+  shop: {
+    name: 'AN THUONG ORDER',
+    tagline: 'Your local shopping assistant · Linz Coffee, 42 An Thuong 2',
+    address: 'Linz Coffee, 42 An Thuong 2, Da Nang',
+    whatsapp: '+84 567 920 087',
+    payment: 'Cash at Linz Coffee, or via Wise.',
+    wise: '',
+    footer: 'We order after payment and message you when it arrives.',
+    public_base: '',
+  },
+};

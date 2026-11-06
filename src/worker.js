@@ -1,0 +1,639 @@
+// An Thuong Order — internal app on Cloudflare Workers + D1.
+import { SCHEMA, DEFAULT_SETTINGS } from './schema.js';
+import { renderPublicQuote, renderNotFound } from './public-quote.js';
+
+export const APP_VERSION = '0.1.0';
+
+const PERMS = ['quotes', 'orders', 'settings', 'users'];
+const STATUSES = ['quoted', 'paid', 'ordered', 'arrived', 'received', 'cancelled', 'returned'];
+const PAYMENT = ['unpaid', 'cash', 'wise', 'bank'];
+const SESSION_DAYS = 30;
+const COOKIE = 'atos';
+const INITIAL_ADMIN = { username: 'duycan2000', password: '123456', display_name: 'Duy' };
+
+let schemaReady = null;
+
+export default {
+  async fetch(request, env, ctx) {
+    try {
+      if (!schemaReady) schemaReady = ensureSchema(env).catch((e) => { schemaReady = null; throw e; });
+      await schemaReady;
+      const url = new URL(request.url);
+      const path = url.pathname;
+      if (path.startsWith('/api/')) return await handleApi(request, env, url);
+      const m = path.match(/^\/q\/([A-Za-z0-9]{4,12})\/?$/);
+      if (m) return await publicQuote(env, m[1].toUpperCase(), url);
+      if (path === '/q' || path.startsWith('/q/')) return html(renderNotFound(), 404);
+      return env.ASSETS.fetch(request);
+    } catch (err) {
+      console.error(err);
+      if (err instanceof HttpError) return json({ error: err.message }, err.status);
+      return json({ error: 'Lỗi máy chủ: ' + (err && err.message ? err.message : String(err)) }, 500);
+    }
+  },
+};
+
+class HttpError extends Error {
+  constructor(status, message) { super(message); this.status = status; }
+}
+const bad = (msg) => new HttpError(400, msg);
+
+// ---------- helpers ----------
+function json(data, status = 200, headers = {}) {
+  return new Response(JSON.stringify(data), {
+    status,
+    headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...headers },
+  });
+}
+function html(body, status = 200) {
+  return new Response(body, {
+    status,
+    headers: {
+      'content-type': 'text/html; charset=utf-8',
+      'cache-control': 'no-store',
+      'x-robots-tag': 'noindex, nofollow',
+      'referrer-policy': 'no-referrer',
+    },
+  });
+}
+const nowIso = () => new Date().toISOString();
+const int = (v, d = 0) => {
+  const n = Math.round(Number(v));
+  return Number.isFinite(n) ? n : d;
+};
+const str = (v, max = 2000) => (v == null ? '' : String(v)).trim().slice(0, max);
+
+export function normalize(s) {
+  return (s || '')
+    .toString()
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function randomId(len, alphabet = '23456789ABCDEFGHJKMNPQRSTUVWXYZ') {
+  const bytes = crypto.getRandomValues(new Uint8Array(len));
+  let out = '';
+  for (const b of bytes) out += alphabet[b % alphabet.length];
+  return out;
+}
+function randomToken() {
+  const bytes = crypto.getRandomValues(new Uint8Array(32));
+  return [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
+}
+const b64 = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf)));
+const unb64 = (s) => Uint8Array.from(atob(s), (c) => c.charCodeAt(0));
+
+async function hashPassword(password, saltB64) {
+  const salt = saltB64 ? unb64(saltB64) : crypto.getRandomValues(new Uint8Array(16));
+  const iterations = 100000;
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(password), 'PBKDF2', false, ['deriveBits']);
+  const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', hash: 'SHA-256', salt, iterations }, key, 256);
+  return `pbkdf2$${iterations}$${b64(salt)}$${b64(bits)}`;
+}
+async function verifyPassword(password, stored) {
+  const parts = (stored || '').split('$');
+  if (parts.length !== 4) return false;
+  const again = await hashPassword(password, parts[2]);
+  // constant-time-ish compare
+  if (again.length !== stored.length) return false;
+  let diff = 0;
+  for (let i = 0; i < again.length; i++) diff |= again.charCodeAt(i) ^ stored.charCodeAt(i);
+  return diff === 0;
+}
+
+// ---------- schema & settings ----------
+async function ensureSchema(env) {
+  await env.DB.batch(SCHEMA.map((s) => env.DB.prepare(s)));
+  const row = await env.DB.prepare('SELECT COUNT(*) AS n FROM users').first();
+  if (!row || !row.n) {
+    const hash = await hashPassword(INITIAL_ADMIN.password);
+    await env.DB.prepare(
+      `INSERT INTO users (username, display_name, pass_hash, role, perms, active, pw_changed, created_at)
+       VALUES (?, ?, ?, 'admin', ?, 1, 0, ?)`
+    ).bind(INITIAL_ADMIN.username, INITIAL_ADMIN.display_name, hash, JSON.stringify(PERMS), nowIso()).run();
+  }
+}
+
+async function getSettings(env) {
+  const rows = (await env.DB.prepare('SELECT key, value FROM settings').all()).results || [];
+  const out = JSON.parse(JSON.stringify(DEFAULT_SETTINGS));
+  for (const r of rows) {
+    try {
+      const v = JSON.parse(r.value);
+      if (r.key === 'fees') {
+        for (const p of Object.keys(out.fees)) if (v[p]) out.fees[p] = { ...out.fees[p], ...v[p] };
+      } else if (r.key === 'shop') out.shop = { ...out.shop, ...v };
+    } catch (_) { /* ignore corrupt value */ }
+  }
+  return out;
+}
+
+// ---------- auth ----------
+function getCookie(request, name) {
+  const header = request.headers.get('cookie') || '';
+  for (const part of header.split(';')) {
+    const [k, ...v] = part.trim().split('=');
+    if (k === name) return decodeURIComponent(v.join('='));
+  }
+  return null;
+}
+function sessionCookie(token, maxAge) {
+  return `${COOKIE}=${token}; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=${maxAge}`;
+}
+function publicUser(u) {
+  let perms = [];
+  try { perms = JSON.parse(u.perms || '[]'); } catch (_) {}
+  if (u.role === 'admin') perms = [...PERMS];
+  return {
+    id: u.id, username: u.username, display_name: u.display_name || u.username, role: u.role,
+    perms, active: !!u.active, pw_changed: !!u.pw_changed, created_at: u.created_at, last_login: u.last_login,
+  };
+}
+async function currentUser(request, env) {
+  const token = getCookie(request, COOKIE);
+  if (!token) return null;
+  const row = await env.DB.prepare(
+    `SELECT u.* FROM sessions s JOIN users u ON u.id = s.user_id WHERE s.token = ? AND s.expires_at > ?`
+  ).bind(token, nowIso()).first();
+  if (!row || !row.active) return null;
+  return publicUser(row);
+}
+function need(user, perm) {
+  if (!user) throw new HttpError(401, 'Chưa đăng nhập');
+  if (perm && !user.perms.includes(perm)) throw new HttpError(403, 'Bạn không có quyền thực hiện thao tác này');
+}
+
+async function login(request, env) {
+  const body = await readJson(request);
+  const username = str(body.username, 64);
+  const password = String(body.password || '');
+  if (!username || !password) throw bad('Nhập tên đăng nhập và mật khẩu');
+  const key = 'u:' + username.toLowerCase();
+  const windowMs = 15 * 60 * 1000;
+  const att = await env.DB.prepare('SELECT * FROM login_attempts WHERE key = ?').bind(key).first();
+  if (att && att.count >= 5 && Date.now() - att.first_at < windowMs) {
+    throw new HttpError(429, 'Sai quá 5 lần. Vui lòng thử lại sau 15 phút.');
+  }
+  const user = await env.DB.prepare('SELECT * FROM users WHERE username = ?').bind(username).first();
+  const ok = user && user.active && (await verifyPassword(password, user.pass_hash));
+  if (!ok) {
+    if (!att || Date.now() - att.first_at >= windowMs) {
+      await env.DB.prepare('INSERT OR REPLACE INTO login_attempts (key, count, first_at) VALUES (?, 1, ?)').bind(key, Date.now()).run();
+    } else {
+      await env.DB.prepare('UPDATE login_attempts SET count = count + 1 WHERE key = ?').bind(key).run();
+    }
+    throw new HttpError(401, 'Sai tên đăng nhập hoặc mật khẩu');
+  }
+  await env.DB.prepare('DELETE FROM login_attempts WHERE key = ?').bind(key).run();
+  const token = randomToken();
+  const expires = new Date(Date.now() + SESSION_DAYS * 86400000).toISOString();
+  await env.DB.batch([
+    env.DB.prepare('INSERT INTO sessions (token, user_id, created_at, expires_at) VALUES (?, ?, ?, ?)').bind(token, user.id, nowIso(), expires),
+    env.DB.prepare('UPDATE users SET last_login = ? WHERE id = ?').bind(nowIso(), user.id),
+    env.DB.prepare('DELETE FROM sessions WHERE expires_at < ?').bind(nowIso()),
+  ]);
+  return json({ user: publicUser(user), version: APP_VERSION }, 200, { 'set-cookie': sessionCookie(token, SESSION_DAYS * 86400) });
+}
+
+async function readJson(request) {
+  const ct = request.headers.get('content-type') || '';
+  if (!ct.includes('application/json')) throw bad('Yêu cầu phải là JSON');
+  try { return await request.json(); } catch (_) { throw bad('JSON không hợp lệ'); }
+}
+
+// ---------- API router ----------
+async function handleApi(request, env, url) {
+  const method = request.method;
+  const path = url.pathname.replace(/\/+$/, '');
+  const seg = path.split('/').slice(2); // after /api
+
+  if (path === '/api/version') return json({ version: APP_VERSION });
+  if (path === '/api/login' && method === 'POST') return login(request, env);
+  if (path === '/api/logout' && method === 'POST') {
+    const token = getCookie(request, COOKIE);
+    if (token) await env.DB.prepare('DELETE FROM sessions WHERE token = ?').bind(token).run();
+    return json({ ok: true }, 200, { 'set-cookie': sessionCookie('', 0) });
+  }
+
+  const user = await currentUser(request, env);
+  if (!user) throw new HttpError(401, 'Chưa đăng nhập');
+
+  // me
+  if (path === '/api/me' && method === 'GET') return json({ user, version: APP_VERSION });
+  if (path === '/api/me/password' && method === 'POST') return changeOwnPassword(request, env, user);
+
+  // settings
+  if (path === '/api/settings' && method === 'GET') return json(await getSettings(env));
+  if (path === '/api/settings' && method === 'PUT') { need(user, 'settings'); return saveSettings(request, env); }
+
+  // users
+  if (seg[0] === 'users') {
+    need(user, 'users');
+    if (seg.length === 1 && method === 'GET') return listUsers(env);
+    if (seg.length === 1 && method === 'POST') return createUser(request, env);
+    if (seg.length === 2 && method === 'PUT') return updateUser(request, env, int(seg[1]), user);
+  }
+
+  // customers
+  if (path === '/api/customers' && method === 'GET') { need(user, 'quotes'); return searchCustomers(env, url); }
+
+  // orders
+  if (seg[0] === 'orders') {
+    if (seg.length === 1 && method === 'GET') { needAny(user, ['quotes', 'orders']); return listOrders(env, url); }
+    if (seg.length === 1 && method === 'POST') { need(user, 'quotes'); return saveOrder(request, env, user, null); }
+    const id = int(seg[1]);
+    if (seg.length === 2 && method === 'GET') { needAny(user, ['quotes', 'orders']); return json(await loadOrder(env, id)); }
+    if (seg.length === 2 && method === 'PUT') { need(user, 'quotes'); return saveOrder(request, env, user, id); }
+    if (seg.length === 2 && method === 'DELETE') { need(user, 'users'); return deleteOrder(env, id); }
+    if (seg.length === 3 && seg[2] === 'payment' && method === 'POST') { need(user, 'orders'); return setPayment(request, env, user, id); }
+  }
+
+  // items
+  if (seg[0] === 'items') {
+    need(user, 'orders');
+    if (seg.length === 1 && method === 'GET') return listItems(env, url);
+    if (seg.length === 2 && seg[1] === 'status' && method === 'POST') return bulkStatus(request, env, user);
+    if (seg.length === 2 && method === 'PUT') return updateItem(request, env, user, int(seg[1]));
+  }
+
+  throw new HttpError(404, 'Không tìm thấy');
+}
+function needAny(user, perms) {
+  if (!perms.some((p) => user.perms.includes(p))) throw new HttpError(403, 'Bạn không có quyền xem mục này');
+}
+
+// ---------- me ----------
+async function changeOwnPassword(request, env, user) {
+  const body = await readJson(request);
+  const row = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(user.id).first();
+  if (!(await verifyPassword(String(body.current || ''), row.pass_hash))) throw bad('Mật khẩu hiện tại không đúng');
+  const next = String(body.next || '');
+  if (next.length < 6) throw bad('Mật khẩu mới tối thiểu 6 ký tự');
+  await env.DB.prepare('UPDATE users SET pass_hash = ?, pw_changed = 1 WHERE id = ?').bind(await hashPassword(next), user.id).run();
+  return json({ ok: true });
+}
+
+// ---------- settings ----------
+async function saveSettings(request, env) {
+  const body = await readJson(request);
+  const cur = await getSettings(env);
+  const fees = {};
+  for (const p of Object.keys(cur.fees)) {
+    const f = (body.fees && body.fees[p]) || cur.fees[p];
+    fees[p] = { first: Math.max(0, int(f.first)), add: Math.max(0, int(f.add)), ship: Math.max(0, int(f.ship)) };
+  }
+  const shop = {};
+  for (const k of Object.keys(cur.shop)) shop[k] = str(body.shop && body.shop[k] != null ? body.shop[k] : cur.shop[k], 600);
+  await env.DB.batch([
+    env.DB.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').bind('fees', JSON.stringify(fees)),
+    env.DB.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').bind('shop', JSON.stringify(shop)),
+  ]);
+  return json(await getSettings(env));
+}
+
+// ---------- users ----------
+async function listUsers(env) {
+  const rows = (await env.DB.prepare('SELECT * FROM users ORDER BY id').all()).results || [];
+  return json({ users: rows.map(publicUser), all_perms: PERMS });
+}
+function cleanPerms(arr) {
+  return Array.isArray(arr) ? PERMS.filter((p) => arr.includes(p)) : [];
+}
+async function createUser(request, env) {
+  const b = await readJson(request);
+  const username = str(b.username, 64);
+  if (!/^[A-Za-z0-9._-]{3,64}$/.test(username)) throw bad('Tên đăng nhập 3–64 ký tự: chữ, số, dấu . _ -');
+  const password = String(b.password || '');
+  if (password.length < 6) throw bad('Mật khẩu tối thiểu 6 ký tự');
+  const role = b.role === 'admin' ? 'admin' : 'staff';
+  const exists = await env.DB.prepare('SELECT id FROM users WHERE username = ?').bind(username).first();
+  if (exists) throw bad('Tên đăng nhập đã tồn tại');
+  await env.DB.prepare(
+    `INSERT INTO users (username, display_name, pass_hash, role, perms, active, pw_changed, created_at) VALUES (?, ?, ?, ?, ?, 1, 0, ?)`
+  ).bind(username, str(b.display_name, 80) || username, await hashPassword(password), role, JSON.stringify(cleanPerms(b.perms)), nowIso()).run();
+  return listUsers(env);
+}
+async function updateUser(request, env, id, me) {
+  const b = await readJson(request);
+  const u = await env.DB.prepare('SELECT * FROM users WHERE id = ?').bind(id).first();
+  if (!u) throw new HttpError(404, 'Không tìm thấy user');
+  const role = b.role === undefined ? u.role : b.role === 'admin' ? 'admin' : 'staff';
+  const active = b.active === undefined ? u.active : b.active ? 1 : 0;
+  if (id === me.id && (role !== 'admin' || !active)) throw bad('Không thể tự gỡ quyền admin hoặc khoá chính mình');
+  const perms = b.perms === undefined ? u.perms : JSON.stringify(cleanPerms(b.perms));
+  const display = b.display_name === undefined ? u.display_name : str(b.display_name, 80);
+  const stmts = [env.DB.prepare('UPDATE users SET role = ?, active = ?, perms = ?, display_name = ? WHERE id = ?').bind(role, active, perms, display, id)];
+  if (b.password) {
+    if (String(b.password).length < 6) throw bad('Mật khẩu tối thiểu 6 ký tự');
+    stmts.push(env.DB.prepare('UPDATE users SET pass_hash = ?, pw_changed = 0 WHERE id = ?').bind(await hashPassword(String(b.password)), id));
+    stmts.push(env.DB.prepare('DELETE FROM sessions WHERE user_id = ?').bind(id));
+  }
+  if (!active) stmts.push(env.DB.prepare('DELETE FROM sessions WHERE user_id = ?').bind(id));
+  await env.DB.batch(stmts);
+  return listUsers(env);
+}
+
+// ---------- customers ----------
+const PHONE_LIKE = "OR REPLACE(REPLACE(REPLACE(REPLACE(REPLACE(c.phone,' ',''),'(',''),')',''),'-',''),'+','') LIKE ?";
+async function searchCustomers(env, url) {
+  const q = normalize(url.searchParams.get('q') || '');
+  const digits = q.replace(/\D/g, '');
+  let rows;
+  if (!q) {
+    rows = (await env.DB.prepare('SELECT c.*, (SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id) AS orders FROM customers c ORDER BY COALESCE(updated_at, created_at) DESC LIMIT 8').all()).results;
+  } else {
+    rows = (await env.DB.prepare(
+      `SELECT c.*, (SELECT COUNT(*) FROM orders o WHERE o.customer_id = c.id) AS orders FROM customers c
+       WHERE c.search LIKE ? ${digits.length >= 3 ? PHONE_LIKE : ''}
+       ORDER BY COALESCE(updated_at, created_at) DESC LIMIT 8`
+    ).bind(...(digits.length >= 3 ? [`%${q}%`, `%${digits}%`] : [`%${q}%`])).all()).results;
+  }
+  return json({ customers: rows || [] });
+}
+
+// ---------- orders ----------
+async function loadOrder(env, id) {
+  const order = await env.DB.prepare('SELECT * FROM orders WHERE id = ?').bind(id).first();
+  if (!order) throw new HttpError(404, 'Không tìm thấy đơn');
+  const items = (await env.DB.prepare('SELECT * FROM items WHERE order_id = ? ORDER BY position, id').bind(id).all()).results || [];
+  return { order, items };
+}
+
+async function listOrders(env, url) {
+  const month = url.searchParams.get('month') || '';
+  const q = normalize(url.searchParams.get('q') || '');
+  const where = [];
+  const args = [];
+  if (/^\d{4}-\d{2}$/.test(month) && !q) { where.push('o.order_date LIKE ?'); args.push(month + '%'); }
+  if (q) {
+    where.push(`(LOWER(o.code) LIKE ? OR o.id IN (SELECT order_id FROM items WHERE search LIKE ?) OR o.customer_id IN (SELECT id FROM customers WHERE search LIKE ?))`);
+    args.push(`%${q}%`, `%${q}%`, `%${q}%`);
+  }
+  const sql = `SELECT o.*,
+      (SELECT COUNT(*) FROM items i WHERE i.order_id = o.id) AS item_count,
+      (SELECT GROUP_CONCAT(status) FROM items i WHERE i.order_id = o.id) AS statuses
+    FROM orders o ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+    ORDER BY o.order_date DESC, o.id DESC LIMIT 300`;
+  const rows = (await env.DB.prepare(sql).bind(...args).all()).results || [];
+  return json({ orders: rows });
+}
+
+function cleanItem(raw, i) {
+  const qty = Math.max(1, int(raw.qty, 1));
+  const unit = Math.max(0, int(raw.unit_price));
+  const platform = ['shopee', 'lazada', 'tiki', 'other'].includes(raw.platform) ? raw.platform : 'other';
+  return {
+    id: raw.id ? int(raw.id) : null,
+    position: i,
+    link: str(raw.link, 1500),
+    platform,
+    name: str(raw.name, 400),
+    name_vi: str(raw.name_vi, 400),
+    variation: str(raw.variation, 200),
+    qty,
+    unit_price: unit,
+    price: unit * qty,
+    shipping: Math.max(0, int(raw.shipping)),
+    fee: Math.max(0, int(raw.fee)),
+    fee_manual: raw.fee_manual ? 1 : 0,
+    status: STATUSES.includes(raw.status) ? raw.status : null,
+    platform_order_id: str(raw.platform_order_id, 80),
+    cost: raw.cost === '' || raw.cost == null ? null : Math.max(0, int(raw.cost)),
+    shelf: str(raw.shelf, 30),
+  };
+}
+const itemSearch = (it, customerName, phone, code) =>
+  normalize([it.name, it.name_vi, it.variation, it.platform_order_id, it.platform, customerName, phone, code].filter(Boolean).join(' | '));
+
+async function nextCode(env, date) {
+  const mmdd = date.slice(5, 7) + date.slice(8, 10);
+  const yy = date.slice(2, 4);
+  const prefix = `Q-${mmdd}-`;
+  const rows = (await env.DB.prepare('SELECT code FROM orders WHERE order_date = ? AND code LIKE ?').bind(date, prefix + '%').all()).results || [];
+  let max = 0;
+  for (const r of rows) {
+    const n = parseInt(r.code.slice(prefix.length), 10);
+    if (n > max) max = n;
+  }
+  let code = `${prefix}${String(max + 1).padStart(2, '0')}`;
+  // same MMDD in a different year: add the year to keep codes unique
+  const clash = await env.DB.prepare('SELECT id FROM orders WHERE code = ?').bind(code).first();
+  if (clash) code = `Q-${yy}${mmdd}-${String(max + 1).padStart(2, '0')}`;
+  return code;
+}
+
+async function upsertCustomer(env, id, name, phone) {
+  const now = nowIso();
+  const search = normalize(name + ' ' + phone);
+  if (id) {
+    const c = await env.DB.prepare('SELECT id FROM customers WHERE id = ?').bind(id).first();
+    if (c) {
+      await env.DB.prepare('UPDATE customers SET name = ?, phone = ?, search = ?, updated_at = ? WHERE id = ?').bind(name, phone, search, now, id).run();
+      return id;
+    }
+  }
+  // match by exact name + phone to avoid duplicates
+  const found = await env.DB.prepare("SELECT id FROM customers WHERE LOWER(name) = LOWER(?) AND COALESCE(phone, '') = ?").bind(name, phone).first();
+  if (found) {
+    await env.DB.prepare('UPDATE customers SET updated_at = ? WHERE id = ?').bind(now, found.id).run();
+    return found.id;
+  }
+  const r = await env.DB.prepare('INSERT INTO customers (name, phone, search, created_at, updated_at) VALUES (?, ?, ?, ?, ?)').bind(name, phone, search, now, now).run();
+  return r.meta.last_row_id;
+}
+
+async function saveOrder(request, env, user, id) {
+  const b = await readJson(request);
+  const name = str(b.customer_name, 120);
+  const phone = str(b.customer_phone, 40);
+  if (!name) throw bad('Nhập tên khách');
+  const date = /^\d{4}-\d{2}-\d{2}$/.test(b.order_date || '') ? b.order_date : new Date().toISOString().slice(0, 10);
+  const rawItems = Array.isArray(b.items) ? b.items : [];
+  const items = rawItems.map(cleanItem).filter((it) => it.name || it.link || it.unit_price);
+  if (!items.length) throw bad('Đơn cần ít nhất 1 sản phẩm');
+  if (items.length > 200) throw bad('Tối đa 200 món mỗi đơn');
+  const payment = PAYMENT.includes(b.payment_status) ? b.payment_status : 'unpaid';
+  const note = str(b.note, 1000);
+  const now = nowIso();
+
+  let existing = null;
+  let oldItems = [];
+  if (id) {
+    const loaded = await loadOrder(env, id);
+    existing = loaded.order;
+    oldItems = loaded.items;
+  }
+  const customerId = await upsertCustomer(env, int(b.customer_id) || (existing && existing.customer_id), name, phone);
+
+  const active = items.filter((it) => !['cancelled', 'returned'].includes(it.status || ''));
+  const products = active.reduce((s, it) => s + it.price, 0);
+  const shipping = active.reduce((s, it) => s + it.shipping, 0);
+  const fees = active.reduce((s, it) => s + it.fee, 0);
+  const grand = products + shipping + fees;
+
+  let orderId = id;
+  let code = existing ? existing.code : null;
+  if (!existing) {
+    code = await nextCode(env, date);
+    let publicId = randomId(6);
+    for (let i = 0; i < 5; i++) {
+      const c = await env.DB.prepare('SELECT id FROM orders WHERE public_id = ?').bind(publicId).first();
+      if (!c) break;
+      publicId = randomId(7);
+    }
+    const r = await env.DB.prepare(
+      `INSERT INTO orders (code, public_id, customer_id, customer_name, customer_phone, order_date, payment_status, note,
+        products_total, shipping_total, fee_total, grand_total, created_by, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).bind(code, publicId, customerId, name, phone, date, payment, note, products, shipping, fees, grand, user.id, now, now).run();
+    orderId = r.meta.last_row_id;
+  } else {
+    await env.DB.prepare(
+      `UPDATE orders SET customer_id = ?, customer_name = ?, customer_phone = ?, order_date = ?, payment_status = ?, note = ?,
+        products_total = ?, shipping_total = ?, fee_total = ?, grand_total = ?, updated_at = ? WHERE id = ?`
+    ).bind(customerId, name, phone, date, payment, note, products, shipping, fees, grand, now, orderId).run();
+  }
+
+  // items: update by id, insert new, delete removed
+  const oldById = new Map(oldItems.map((it) => [it.id, it]));
+  const keep = new Set();
+  const stmts = [];
+  const paidLike = payment !== 'unpaid';
+  for (const it of items) {
+    const old = it.id ? oldById.get(it.id) : null;
+    let status = it.status || (old ? old.status : 'quoted');
+    if (paidLike && status === 'quoted') status = 'paid';
+    if (!paidLike && status === 'paid') status = 'quoted';
+    const search = itemSearch(it, name, phone, code);
+    if (old) {
+      keep.add(old.id);
+      const statusAt = old.status !== status ? now : old.status_at;
+      stmts.push(env.DB.prepare(
+        `UPDATE items SET position=?, link=?, platform=?, name=?, name_vi=?, variation=?, qty=?, unit_price=?, price=?, shipping=?, fee=?, fee_manual=?,
+          status=?, status_at=?, platform_order_id=?, cost=?, shelf=?, search=? WHERE id=? AND order_id=?`
+      ).bind(it.position, it.link, it.platform, it.name, it.name_vi, it.variation, it.qty, it.unit_price, it.price, it.shipping, it.fee, it.fee_manual,
+        status, statusAt, it.platform_order_id, it.cost, it.shelf, search, old.id, orderId));
+      if (old.status !== status) stmts.push(env.DB.prepare('INSERT INTO status_log (item_id, from_status, to_status, user_id, at) VALUES (?, ?, ?, ?, ?)').bind(old.id, old.status, status, user.id, now));
+    } else {
+      stmts.push(env.DB.prepare(
+        `INSERT INTO items (order_id, position, link, platform, name, name_vi, variation, qty, unit_price, price, shipping, fee, fee_manual,
+          status, status_at, platform_order_id, cost, shelf, search) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`
+      ).bind(orderId, it.position, it.link, it.platform, it.name, it.name_vi, it.variation, it.qty, it.unit_price, it.price, it.shipping, it.fee, it.fee_manual,
+        status, now, it.platform_order_id, it.cost, it.shelf, search));
+    }
+  }
+  for (const old of oldItems) if (!keep.has(old.id)) stmts.push(env.DB.prepare('DELETE FROM items WHERE id = ?').bind(old.id));
+  if (stmts.length) await env.DB.batch(stmts);
+  return json(await loadOrder(env, orderId), existing ? 200 : 201);
+}
+
+async function deleteOrder(env, id) {
+  await env.DB.batch([
+    env.DB.prepare('DELETE FROM status_log WHERE item_id IN (SELECT id FROM items WHERE order_id = ?)').bind(id),
+    env.DB.prepare('DELETE FROM items WHERE order_id = ?').bind(id),
+    env.DB.prepare('DELETE FROM orders WHERE id = ?').bind(id),
+  ]);
+  return json({ ok: true });
+}
+
+async function setPayment(request, env, user, id) {
+  const b = await readJson(request);
+  const payment = PAYMENT.includes(b.payment_status) ? b.payment_status : 'unpaid';
+  const { items } = await loadOrder(env, id);
+  const now = nowIso();
+  const stmts = [env.DB.prepare('UPDATE orders SET payment_status = ?, updated_at = ? WHERE id = ?').bind(payment, now, id)];
+  for (const it of items) {
+    let to = it.status;
+    if (payment !== 'unpaid' && it.status === 'quoted') to = 'paid';
+    if (payment === 'unpaid' && it.status === 'paid') to = 'quoted';
+    if (to !== it.status) {
+      stmts.push(env.DB.prepare('UPDATE items SET status = ?, status_at = ? WHERE id = ?').bind(to, now, it.id));
+      stmts.push(env.DB.prepare('INSERT INTO status_log (item_id, from_status, to_status, user_id, at) VALUES (?, ?, ?, ?, ?)').bind(it.id, it.status, to, user.id, now));
+    }
+  }
+  await env.DB.batch(stmts);
+  return json(await loadOrder(env, id));
+}
+
+// ---------- items ----------
+async function listItems(env, url) {
+  const q = normalize(url.searchParams.get('q') || '');
+  const status = url.searchParams.get('status') || 'waiting';
+  const where = [];
+  const args = [];
+  if (status === 'waiting') where.push(`i.status IN ('paid','ordered')`);
+  else if (STATUSES.includes(status)) { where.push('i.status = ?'); args.push(status); }
+  if (q) { where.push('i.search LIKE ?'); args.push(`%${q}%`); }
+  const rows = (await env.DB.prepare(
+    `SELECT i.*, o.code, o.customer_name, o.customer_phone, o.order_date, o.public_id, o.payment_status,
+       (SELECT COUNT(*) FROM items x WHERE x.order_id = i.order_id) AS order_items,
+       (SELECT COUNT(*) FROM items x WHERE x.order_id = i.order_id AND x.status IN ('arrived','received')) AS order_arrived
+     FROM items i JOIN orders o ON o.id = i.order_id
+     ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
+     ORDER BY o.order_date DESC, o.id DESC, i.position LIMIT 300`
+  ).bind(...args).all()).results || [];
+  const counts = (await env.DB.prepare('SELECT status, COUNT(*) AS n FROM items GROUP BY status').all()).results || [];
+  return json({ items: rows, counts: Object.fromEntries(counts.map((c) => [c.status, c.n])) });
+}
+
+async function bulkStatus(request, env, user) {
+  const b = await readJson(request);
+  const ids = (Array.isArray(b.ids) ? b.ids : []).map((x) => int(x)).filter(Boolean).slice(0, 300);
+  if (!ids.length) throw bad('Chưa chọn món nào');
+  if (!STATUSES.includes(b.status)) throw bad('Trạng thái không hợp lệ');
+  const now = nowIso();
+  const marks = ids.map(() => '?').join(',');
+  const rows = (await env.DB.prepare(`SELECT id, status, order_id FROM items WHERE id IN (${marks})`).bind(...ids).all()).results || [];
+  const stmts = [];
+  for (const r of rows) {
+    if (r.status === b.status) continue;
+    stmts.push(env.DB.prepare('UPDATE items SET status = ?, status_at = ? WHERE id = ?').bind(b.status, now, r.id));
+    stmts.push(env.DB.prepare('INSERT INTO status_log (item_id, from_status, to_status, user_id, at) VALUES (?, ?, ?, ?, ?)').bind(r.id, r.status, b.status, user.id, now));
+  }
+  if (b.shelf !== undefined) stmts.push(env.DB.prepare(`UPDATE items SET shelf = ? WHERE id IN (${marks})`).bind(str(b.shelf, 30), ...ids));
+  if (stmts.length) await env.DB.batch(stmts);
+  // recompute totals for affected orders (cancel/return changes totals)
+  for (const oid of [...new Set(rows.map((r) => r.order_id))]) await recomputeTotals(env, oid);
+  return json({ ok: true, changed: rows.length });
+}
+
+async function recomputeTotals(env, orderId) {
+  const t = await env.DB.prepare(
+    `SELECT COALESCE(SUM(price),0) AS p, COALESCE(SUM(shipping),0) AS s, COALESCE(SUM(fee),0) AS f
+     FROM items WHERE order_id = ? AND status NOT IN ('cancelled','returned')`
+  ).bind(orderId).first();
+  await env.DB.prepare('UPDATE orders SET products_total=?, shipping_total=?, fee_total=?, grand_total=?, updated_at=? WHERE id=?')
+    .bind(t.p, t.s, t.f, t.p + t.s + t.f, nowIso(), orderId).run();
+}
+
+async function updateItem(request, env, user, id) {
+  const b = await readJson(request);
+  const it = await env.DB.prepare('SELECT i.*, o.customer_name, o.customer_phone, o.code FROM items i JOIN orders o ON o.id = i.order_id WHERE i.id = ?').bind(id).first();
+  if (!it) throw new HttpError(404, 'Không tìm thấy món');
+  const next = {
+    platform_order_id: b.platform_order_id !== undefined ? str(b.platform_order_id, 80) : it.platform_order_id,
+    cost: b.cost !== undefined ? (b.cost === '' || b.cost == null ? null : Math.max(0, int(b.cost))) : it.cost,
+    shelf: b.shelf !== undefined ? str(b.shelf, 30) : it.shelf,
+  };
+  const search = itemSearch({ ...it, ...next }, it.customer_name, it.customer_phone, it.code);
+  await env.DB.prepare('UPDATE items SET platform_order_id = ?, cost = ?, shelf = ?, search = ? WHERE id = ?')
+    .bind(next.platform_order_id, next.cost, next.shelf, search, id).run();
+  if (b.status && STATUSES.includes(b.status) && b.status !== it.status) {
+    const fake = new Request('http://x', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ids: [id], status: b.status }) });
+    await bulkStatus(fake, env, user);
+  }
+  return json({ ok: true });
+}
+
+// ---------- public quote page ----------
+async function publicQuote(env, publicId, url) {
+  const order = await env.DB.prepare('SELECT * FROM orders WHERE public_id = ?').bind(publicId).first();
+  if (!order) return html(renderNotFound(), 404);
+  const items = (await env.DB.prepare('SELECT * FROM items WHERE order_id = ? ORDER BY position, id').bind(order.id).all()).results || [];
+  const settings = await getSettings(env);
+  return html(renderPublicQuote({ order, items, settings, url: url.href }));
+}

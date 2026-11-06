@@ -1,0 +1,25 @@
+{
+  // An Thuong Order — Cloudflare Worker config
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "anthuongorder-app",
+  "main": "src/worker.js",
+  "compatibility_date": "2025-10-01",
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "run_worker_first": true,
+    "not_found_handling": "single-page-application"
+  },
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "anthuongorder-db"
+      // Wrangler tự tạo database khi deploy lần đầu (automatic provisioning).
+      // Nếu deploy báo lỗi thiếu database_id: tạo D1 "anthuongorder-db" trong dashboard
+      // rồi thêm dòng:  "database_id": "<ID>"
+    }
+  ],
+  // Bật sau khi tên miền anthuongorder.com đã ở trên Cloudflare:
+  // "routes": [{ "pattern": "app.anthuongorder.com", "custom_domain": true }],
+  "observability": { "enabled": true }
+}

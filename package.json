@@ -1,0 +1,12 @@
+{
+  "name": "anthuongorder-app",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "An Thuong Order — internal quote & order app (Cloudflare Workers + D1)",
+  "scripts": {
+    "local": "node dev/local.mjs",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy"
+  }
+}
