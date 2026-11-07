@@ -3,11 +3,22 @@ import { SCHEMA, MIGRATIONS, SCHEMA_VERSION, DEFAULT_SETTINGS } from './schema.j
 import { DEMO_COUNT, planDemoCustomer, shiftDate } from './demo.js';
 import { renderPublicQuote, renderNotFound } from './public-quote.js';
 
-export const APP_VERSION = '0.6.1';
+export const APP_VERSION = '0.6.2';
 
 const PERMS = ['quotes', 'orders', 'settings', 'users'];
 const STATUSES = ['quoted', 'paid', 'ordered', 'arrived', 'received', 'cancelled', 'returned'];
 const PAYMENT = ['unpaid', 'cash', 'wise', 'bank'];
+// Allowed manual status changes (one step forward / one step back, or cancel).
+// quoted -> paid happens by recording a payment; paid -> ordered normally via a purchase.
+export const NEXT_STATUS = {
+  quoted: ['cancelled'],
+  paid: ['ordered', 'cancelled'],
+  ordered: ['arrived', 'paid', 'cancelled'],
+  arrived: ['received', 'ordered'],
+  received: ['arrived'],
+  cancelled: ['quoted', 'paid'],
+  returned: [],
+};
 const SESSION_DAYS = 30;
 const COOKIE = 'atos';
 const INITIAL_ADMIN = { username: 'duycan2000', password: '123456', display_name: 'Duy' };
@@ -1155,7 +1166,14 @@ async function bulkStatus(request, env, user) {
   if (!STATUSES.includes(b.status)) throw bad('Trạng thái không hợp lệ');
   const now = nowIso();
   const marks = ids.map(() => '?').join(',');
-  const rows = (await env.DB.prepare(`SELECT id, status, order_id FROM items WHERE id IN (${marks})`).bind(...ids).all()).results || [];
+  const all = (await env.DB.prepare(`SELECT id, status, order_id FROM items WHERE id IN (${marks})`).bind(...ids).all()).results || [];
+  const rows = all.filter((r) => r.status === b.status || (NEXT_STATUS[r.status] || []).includes(b.status));
+  const skipped = all.length - rows.length;
+  if (!rows.length) {
+    const from = [...new Set(all.map((r) => r.status))];
+    const VI = { quoted: 'Đã báo giá', paid: 'Đã thanh toán', ordered: 'Đã đặt hàng', arrived: 'Hàng về quán', received: 'Khách đã lấy', cancelled: 'Hủy', returned: 'Trả hàng' };
+    throw bad(`Không thể chuyển món đang "${from.map((x) => VI[x] || x).join(', ')}" sang "${VI[b.status] || b.status}". Thứ tự: Đã báo giá → Đã thanh toán → Đã đặt hàng → Hàng về quán → Khách đã lấy.`);
+  }
   const stmts = [];
   for (const r of rows) {
     if (r.status === b.status) continue;
@@ -1166,7 +1184,7 @@ async function bulkStatus(request, env, user) {
   if (stmts.length) await env.DB.batch(stmts);
   // recompute totals for affected orders (cancel/return changes totals)
   for (const oid of [...new Set(rows.map((r) => r.order_id))]) await recomputeTotals(env, oid);
-  return json({ ok: true, changed: rows.length });
+  return json({ ok: true, changed: rows.length, skipped });
 }
 
 async function recomputeTotals(env, orderId) {

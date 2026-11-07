@@ -1,7 +1,10 @@
 // An Thuong Order — internal app (vanilla JS SPA)
 import { renderQuoteImages, ensureFonts, canvasToBlob } from './quote-image.js';
 
-const CLIENT_VERSION = '0.6.1';
+const CLIENT_VERSION = '0.6.2';
+// must match NEXT_STATUS in src/worker.js
+const NEXT_STATUS = { quoted: ['cancelled'], paid: ['ordered', 'cancelled'], ordered: ['arrived', 'paid', 'cancelled'], arrived: ['received', 'ordered'], received: ['arrived'], cancelled: ['quoted', 'paid'], returned: [] };
+const canMove = (from, to) => (NEXT_STATUS[from] || []).includes(to);
 const NATIVE = typeof window.AndroidBridge !== 'undefined'; // running inside the Android app
 const $app = document.getElementById('app');
 
@@ -442,7 +445,7 @@ async function viewQuote(id) {
       ${isExisting() ? `<div class="sec sec-track">
         <div class="sec-l">Theo dõi</div>
         <div class="sec-b g4">
-          <div class="f"><label>Trạng thái</label><div class="with-btn"><select class="in" data-f="status" ${it.status === 'returned' ? 'disabled' : ''}>${Object.entries(STATUS).filter(([k]) => k !== 'returned' || it.status === 'returned').map(([k, v]) => `<option value="${k}" ${it.status === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
+          <div class="f"><label>Trạng thái</label><div class="with-btn"><select class="in" data-f="status" ${it.status === 'returned' ? 'disabled' : ''}>${Object.entries(STATUS).filter(([k]) => k === it.status || (k !== 'returned' && canMove(it.status, k))).map(([k, v]) => `<option value="${k}" ${it.status === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
             ${it.id && can('orders') && ['ordered', 'arrived', 'received'].includes(it.status) ? `<button class="btn sm" type="button" data-act="return" title="Khách trả hàng / hoàn tiền">↩ Trả</button>` : ''}</div></div>
           <div class="f"><label>Mã đơn Shopee / Lazada</label><input class="in" data-f="platform_order_id" placeholder="Dán khi đặt hàng" value="${esc(it.platform_order_id || '')}"></div>
           <div class="f"><label>Tiền thực đặt ${it.purchase_id ? `<a href="#/purchase" class="hint">${esc(it.purchase_code || 'lượt đặt')}</a>` : ''}</label>${it.purchase_id ? `<div class="in money tot-box" title="Phân bổ từ lượt đặt ${esc(it.purchase_code || '')}">${money(it.cost)}</div>` : `<input class="in money" data-f="cost" inputmode="numeric" placeholder="—" value="${it.cost != null ? money(it.cost) : ''}">`}</div>
@@ -1047,7 +1050,18 @@ async function viewLookup() {
     const list = [['waiting', 'Đang chờ hàng', w], ['quoted', STATUS.quoted, counts.quoted], ['paid', STATUS.paid, counts.paid], ['ordered', STATUS.ordered, counts.ordered], ['arrived', STATUS.arrived, counts.arrived], ['received', STATUS.received, counts.received], ['cancelled', 'Hủy', counts.cancelled], ['all', 'Tất cả', null]];
     view.querySelector('#l-chips').innerHTML = list.map(([k, l, n]) => `<button class="chip ${filter === k ? 'on' : ''}" data-f="${k}">${l}${n ? `<b>${n}</b>` : ''}</button>`).join('');
   };
-  const statusBtns = (cls = 'btn') => ['ordered', 'arrived', 'received'].map((s) => `<button class="${cls}" data-set="${s}">${STATUS[s]}${s === 'arrived' ? ' <span class="kbd">A</span>' : s === 'received' ? ' <span class="kbd">R</span>' : ''}</button>`).join('');
+  const selItems = () => items.filter((i) => sel.has(i.id));
+  const validFor = (to) => { const list = selItems(); return list.length > 0 && list.every((i) => canMove(i.status, to)); };
+  const statusBtns = (cls = 'btn') => ['arrived', 'received'].filter(validFor).map((s) => `<button class="${cls}" data-set="${s}">${STATUS[s]}${s === 'arrived' ? ' <span class="kbd">A</span>' : ' <span class="kbd">R</span>'}</button>`).join('');
+  // per-card actions follow the flow: quoted -> record payment, paid -> purchase, ordered -> arrived, arrived -> picked up
+  const cardActions = (it) => {
+    if (it.status === 'quoted') return `<div class="acts1"><span class="muted">Chờ khách trả tiền</span><a class="btn" href="#/quote/${it.order_id}">Mở đơn · ghi nhận tiền</a></div>`;
+    if (it.status === 'paid') return `<div class="acts1"><span class="muted">Đã trả tiền, chưa đặt</span><a class="btn p" href="#/purchase" data-buy="${esc(it.customer_name)}">Đặt hàng →</a></div>`;
+    if (it.status === 'ordered') return `<div class="acts1"><span class="muted">Chờ hàng về</span><button class="btn p" data-one="${it.id}" data-s="arrived">Hàng về quán</button></div>`;
+    if (it.status === 'arrived') return `<div class="acts1"><button class="btn ghost" data-one="${it.id}" data-s="ordered" title="Bấm nhầm? Quay lại Đã đặt hàng">↩ Chưa về</button><button class="btn p" data-one="${it.id}" data-s="received">Khách đã lấy</button></div>`;
+    if (it.status === 'received') return `<div class="acts1"><span class="muted">✓ Đã giao cho khách</span><button class="btn ghost" data-one="${it.id}" data-s="arrived">↩ Hoàn tác</button></div>`;
+    return '';
+  };
   const render = () => {
     chips();
     if (!items.length) {
@@ -1067,11 +1081,14 @@ async function viewLookup() {
         <div class="top"><div style="min-width:0"><b>${esc(it.customer_name)}</b> <span class="muted">· ${esc(it.code)}</span></div><span class="pill s-${it.status}">${STATUS[it.status]}</span></div>
         <div style="margin-top:4px">${esc(it.name || it.name_vi || '—')}${vt(it) ? ` <span class="muted">· ${esc(vt(it))}</span>` : ''}</div>
         <div class="muted" style="font-size:12.5px">${it.name_vi && it.name ? esc(it.name_vi) + ' · ' : ''}${it.platform_order_id ? esc(it.platform_order_id) + ' · ' : ''}${daysSince(it.status_at)} ngày · ${it.order_arrived}/${it.order_items} món đã về</div>
-        <div class="acts"><button class="btn" data-one="${it.id}" data-s="arrived" style="color:var(--vio);border-color:#D9C8FA">Hàng về quán</button><button class="btn" data-one="${it.id}" data-s="received" style="color:var(--ok);border-color:#BFE3CF">Khách đã lấy</button></div></div>`).join('');
+        ${cardActions(it)}</div>`).join('');
     }
     const bulk = view.querySelector('#l-bulk');
-    bulk.innerHTML = sel.size ? `<div class="bulk"><b>${sel.size} món đã chọn</b><span style="opacity:.8">→ chuyển sang:</span>${statusBtns()}
-      <select class="in" id="l-other" style="max-width:150px"><option value="">Khác…</option>${Object.entries(STATUS).map(([k, v]) => `<option value="${k}">${v}</option>`).join('')}</select>
+    const others = Object.keys(STATUS).filter((k) => !['arrived', 'received'].includes(k) && validFor(k));
+    const btns = statusBtns();
+    const hint = selItems().some((i) => i.status === 'quoted') ? 'Món chưa trả tiền: ghi nhận tiền trong đơn trước' : selItems().some((i) => i.status === 'paid') ? 'Món chưa đặt: ghi lượt đặt ở mục Đặt hàng' : 'Các món đang ở trạng thái khác nhau — chọn món cùng trạng thái';
+    bulk.innerHTML = sel.size ? `<div class="bulk"><b>${sel.size} món đã chọn</b>${btns ? `<span style="opacity:.8">→ chuyển sang:</span>${btns}` : `<span style="opacity:.85">${hint}</span>`}
+      ${others.length ? `<select class="in" id="l-other" style="max-width:170px"><option value="">Khác…</option>${others.map((k) => `<option value="${k}">${STATUS[k]}</option>`).join('')}</select>` : ''}
       <input class="in" id="l-shelf" placeholder="Kệ / túi"><button class="btn" data-clear style="margin-left:auto">Bỏ chọn</button></div>` : '';
   };
   const load = async () => {
@@ -1085,7 +1102,8 @@ async function viewLookup() {
     const shelfEl = view.querySelector('#l-shelf');
     const shelf = shelfEl && shelfEl.value.trim();
     const affected = items.filter((i) => ids.includes(i.id));
-    await api('POST', '/items/status', { ids, status, ...(shelf ? { shelf } : {}) });
+    const res = await api('POST', '/items/status', { ids, status, ...(shelf ? { shelf } : {}) });
+    if (res.skipped) toast(`${res.skipped} món không đổi được vì sai thứ tự trạng thái`, 'err', 5000);
     sel.clear();
     await load();
     refreshWaiting();
@@ -1109,6 +1127,8 @@ async function viewLookup() {
   view.addEventListener('click', async (e) => {
     const chip = e.target.closest('[data-f]');
     if (chip && chip.classList.contains('chip')) { filter = chip.dataset.f; sessionStorage.setItem('at.lf', filter); sel.clear(); await load(); return; }
+    const buy = e.target.closest('[data-buy]');
+    if (buy) { sessionStorage.setItem('at.pq', buy.dataset.buy); return; }
     const one = e.target.closest('[data-one]');
     if (one) { await setStatus([+one.dataset.one], one.dataset.s).catch((x) => toast(x.message, 'err')); return; }
     const set = e.target.closest('[data-set]');
@@ -1130,8 +1150,8 @@ async function viewLookup() {
   const onKey = (e) => {
     if (!document.body.contains(view)) { document.removeEventListener('keydown', onKey); return; }
     if (!sel.size || ['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
-    if (e.key === 'a' || e.key === 'A') setStatus([...sel], 'arrived').catch((x) => toast(x.message, 'err'));
-    if (e.key === 'r' || e.key === 'R') setStatus([...sel], 'received').catch((x) => toast(x.message, 'err'));
+    if ((e.key === 'a' || e.key === 'A') && validFor('arrived')) setStatus([...sel], 'arrived').catch((x) => toast(x.message, 'err'));
+    if ((e.key === 'r' || e.key === 'R') && validFor('received')) setStatus([...sel], 'received').catch((x) => toast(x.message, 'err'));
   };
   document.addEventListener('keydown', onKey);
   view.querySelector('#l-q').addEventListener('input', debounce(() => load().catch((x) => toast(x.message, 'err')), 220));
