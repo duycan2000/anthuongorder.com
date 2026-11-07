@@ -1,7 +1,7 @@
 // An Thuong Order — internal app (vanilla JS SPA)
 import { renderQuoteImages, ensureFonts, canvasToBlob } from './quote-image.js';
 
-const CLIENT_VERSION = '0.4.1';
+const CLIENT_VERSION = '0.4.2';
 const $app = document.getElementById('app');
 
 // ---------------- utils ----------------
@@ -332,7 +332,7 @@ async function viewQuote(id) {
   if (id) {
     try {
       const r = await api('GET', '/orders/' + id);
-      q = { ...r.order, items: r.items.map((i) => ({ ...i })), payments: r.payments || [] };
+      q = { ...r.order, items: r.items.map((i) => ({ ...i, _open: r.items.length <= 2 })), payments: r.payments || [] };
     } catch (ex) { view.innerHTML = `<div class="empty">${esc(ex.message)}</div>`; return; }
   } else {
     q = { id: null, code: '', public_id: '', order_date: todayISO(), customer_id: null, customer_name: '', customer_phone: '', payment_status: 'unpaid', note: '', items: [newItem()], payments: [] };
@@ -364,7 +364,8 @@ async function viewQuote(id) {
       </div>
       <div class="card" style="margin-top:14px">
         <div id="rows"></div>
-        <div class="items-f"><button class="btn" id="add">${I.quote} Thêm món <span class="kbd">Ctrl+Enter</span></button>
+        <div class="items-f"><span style="display:flex;gap:8px;flex-wrap:wrap"><button class="btn" id="add">${I.quote} Thêm món <span class="kbd">Ctrl+Enter</span></button>
+          <button class="btn ghost" id="fold" type="button">Thu gọn / mở tất cả</button></span>
           <span class="muted" id="next-fee"></span></div>
       </div>
       <div class="qe-bottom">
@@ -384,44 +385,65 @@ async function viewQuote(id) {
   function rowHtml(it, i) {
     const total = it.qty * it.unit_price + it.shipping + it.fee;
     const off = ['cancelled', 'returned'].includes(it.status);
-    return `<div class="row-it" data-i="${i}" style="${off ? 'opacity:.55' : ''}">
-      <div class="r1">
-        <div class="idx">${i + 1}</div>
-        <div class="lnk"><input class="in" data-f="link" placeholder="Dán link Shopee / Lazada…" value="${esc(it.link)}"></div>
-        <div class="vi" style="display:flex;gap:6px;min-width:0"><input class="in" data-f="name_vi" placeholder="Tên gốc tiếng Việt (tự lấy từ link nếu có)" value="${esc(it.name_vi)}">
-          <button class="btn sm" type="button" data-act="translate" title="Mở Google Dịch">Dịch ↗</button></div>
-        <select class="in" data-f="platform">${Object.entries(PLATFORMS).map(([k, v]) => `<option value="${k}" ${it.platform === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
-        <div class="acts">${it.link ? `<a class="ic" href="${esc(it.link)}" target="_blank" rel="noopener" title="Mở link">${I.ext}</a>` : ''}
-          <button class="ic" type="button" data-act="dup" title="Nhân đôi (Ctrl+D)">${I.dup}</button>
-          <button class="ic" type="button" data-act="del" title="Xoá món">${I.trash}</button></div>
+    const title = it.name || it.name_vi || 'Sản phẩm mới';
+    const open = it._open !== false;
+    const meta = [vt(it), `x${it.qty}`, `${money(it.unit_price)}${it.shipping ? ' + ship ' + money(it.shipping) : ''} + phí ${money(it.fee)}`].filter(Boolean).join(' · ');
+    return `<div class="row-it ${off ? 'off' : ''} ${open ? '' : 'collapsed'}" data-i="${i}">
+      <div class="it-head">
+        <span class="it-no">${i + 1}</span>
+        <select class="in plat p-${esc(it.platform)}" data-f="platform" title="Sàn (tự nhận từ link)">${Object.entries(PLATFORMS).map(([k, v]) => `<option value="${k}" ${it.platform === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
+        <div class="it-title-wrap" data-act="toggle" title="${open ? 'Thu gọn' : 'Mở rộng để sửa'}"><div class="it-title ${it.name || it.name_vi ? '' : 'muted'}" data-title>${esc(title)}</div>${open ? '' : `<div class="it-meta">${esc(meta)}${it.platform_order_id ? ' · ' + esc(it.platform_order_id) : ''}</div>`}</div>
+        ${isExisting() && it.status ? `<span class="pill s-${it.status}">${STATUS[it.status]}</span>` : ''}
+        <div class="it-sum"><span>Cộng</span><b data-tot>${money(total)}</b></div>
+        <div class="acts">${it.link ? `<a class="ic" href="${esc(it.link)}" target="_blank" rel="noopener" title="Mở link sản phẩm">${I.ext}</a>` : ''}
+          <button class="ic" type="button" data-act="dup" title="Nhân đôi món (Ctrl+D) — VD cùng sản phẩm khác màu">${I.dup}</button>
+          <button class="ic" type="button" data-act="del" title="Xoá món">${I.trash}</button>
+          <button class="ic chev" type="button" data-act="toggle" title="${open ? 'Thu gọn' : 'Mở rộng'}">${open ? '▴' : '▾'}</button></div>
       </div>
-      <div class="r2">
-        <div class="idx"></div>
-        <div class="c-name"><label class="fx" data-tag="EN"><input class="in" data-f="name" placeholder="Tên tiếng Anh (in trên ảnh gửi khách)" value="${esc(it.name)}"></label></div>
-        <div class="c-var"><label class="fx" data-tag="PL 1"><input class="in" data-f="variation" placeholder="Màu, kiểu…" value="${esc(it.variation)}"></label></div>
-        <div class="c-var2"><label class="fx" data-tag="PL 2"><input class="in" data-f="variation2" placeholder="Size, dung tích…" value="${esc(it.variation2 || '')}"></label></div>
+      <div class="sec">
+        <div class="sec-l">Sản phẩm</div>
+        <div class="sec-b">
+          <div class="g2">
+            <div class="f"><label>Link sản phẩm</label><input class="in" data-f="link" placeholder="Dán link Shopee / Lazada…" value="${esc(it.link)}"></div>
+            <div class="f"><label>Tên gốc tiếng Việt <span class="hint">tự lấy từ link nếu có</span></label><div class="with-btn"><input class="in" data-f="name_vi" placeholder="Tên trên Shopee" value="${esc(it.name_vi)}"><button class="btn sm" type="button" data-act="translate" title="Mở Google Dịch sang tiếng Anh">Dịch ↗</button></div></div>
+          </div>
+          <div class="g3">
+            <div class="f"><label>Tên tiếng Anh <span class="hint">in trên ảnh gửi khách</span></label><input class="in" data-f="name" placeholder="Product name in English" value="${esc(it.name)}"></div>
+            <div class="f"><label>Phân loại 1</label><input class="in" data-f="variation" placeholder="Màu, kiểu…" value="${esc(it.variation)}"></div>
+            <div class="f"><label>Phân loại 2</label><input class="in" data-f="variation2" placeholder="Size, dung tích…" value="${esc(it.variation2 || '')}"></div>
+          </div>
+        </div>
       </div>
-      <div class="r2b">
-        <div class="idx"></div>
-        <label class="fx" data-tag="SL"><input class="in money" data-f="qty" inputmode="numeric" value="${it.qty}" title="Số lượng"></label>
-        <label class="fx" data-tag="Giá SP"><input class="in money" data-f="unit_price" inputmode="numeric" placeholder="0" value="${it.unit_price ? money(it.unit_price) : ''}" title="Đơn giá sản phẩm (1 cái)"></label>
-        <label class="fx" data-tag="Ship"><input class="in money" data-f="shipping" inputmode="numeric" value="${money(it.shipping)}" title="Phí ship của sàn (Shopee thường 0)"></label>
-        <div class="fee-wrap"><label class="fx" data-tag="Phí DV"><input class="in money ${it.fee_manual ? '' : 'auto'}" data-f="fee" inputmode="numeric" value="${money(it.fee)}" title="${it.fee_manual ? 'Phí dịch vụ sửa tay' : 'Phí dịch vụ tự tính'}"></label>${it.fee_manual ? '<button class="reset" type="button" data-act="fee-auto" title="Về phí tự động">↺</button>' : ''}</div>
-        <div class="tot c-tot"><span class="muted" style="font-weight:600;font-size:11px;margin-right:6px">CỘNG</span><span data-tot>${money(total)}</span></div>
+      <div class="sec sec-price">
+        <div class="sec-l">Giá</div>
+        <div class="sec-b calc">
+          <div class="f f-qty"><label>Số lượng</label><input class="in money" data-f="qty" inputmode="numeric" value="${it.qty}"></div>
+          <span class="op">×</span>
+          <div class="f"><label>Giá sản phẩm <span class="hint">1 cái</span></label><input class="in money" data-f="unit_price" inputmode="numeric" placeholder="0" value="${it.unit_price ? money(it.unit_price) : ''}"></div>
+          <span class="op">+</span>
+          <div class="f"><label>Phí ship sàn</label><input class="in money" data-f="shipping" inputmode="numeric" value="${money(it.shipping)}" title="Shopee thường free ship = 0"></div>
+          <span class="op">+</span>
+          <div class="f fee-wrap"><label>Phí dịch vụ <span class="hint">${it.fee_manual ? 'sửa tay' : 'tự tính'}</span></label><input class="in money ${it.fee_manual ? '' : 'auto'}" data-f="fee" inputmode="numeric" value="${money(it.fee)}">${it.fee_manual ? '<button class="reset" type="button" data-act="fee-auto" title="Về phí tự động">↺</button>' : ''}</div>
+          <span class="op">=</span>
+          <div class="f f-tot"><label>Cộng</label><div class="in money tot-box" data-tot2>${money(total)}</div></div>
+        </div>
       </div>
-      ${isExisting() ? `<div class="r3">
-        <div class="idx"></div>
-        <div data-lbl="Trạng thái" style="display:flex;gap:6px"><select class="in" data-f="status" ${it.status === 'returned' ? 'disabled' : ''}>${Object.entries(STATUS).filter(([k]) => k !== 'returned' || it.status === 'returned').map(([k, v]) => `<option value="${k}" ${it.status === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
-          ${it.id && can('orders') && ['ordered', 'arrived', 'received'].includes(it.status) ? `<button class="btn sm" type="button" data-act="return" title="Khách trả hàng / hoàn tiền">↩ Trả</button>` : ''}</div>
-        <div data-lbl="Mã đơn Shopee/Lazada"><input class="in" data-f="platform_order_id" placeholder="Mã đơn sàn (dán khi đặt hàng)" value="${esc(it.platform_order_id || '')}"></div>
-        <div data-lbl="Tiền thực đặt">${it.purchase_id ? `<div class="in money" style="background:#F7F9F8;display:flex;justify-content:space-between;align-items:center" title="Phân bổ từ lượt đặt ${esc(it.purchase_code || '')}"><a href="#/purchase" class="muted" style="font-size:11.5px">${esc(it.purchase_code || 'lượt đặt')}</a><b>${money(it.cost)}</b></div>` : `<input class="in money" data-f="cost" inputmode="numeric" placeholder="Tiền thực đặt" value="${it.cost != null ? money(it.cost) : ''}">`}</div>
-        <div data-lbl="Kệ / túi"><input class="in" data-f="shelf" placeholder="Kệ (VD: B3)" value="${esc(it.shelf || '')}"></div>
+      ${isExisting() ? `<div class="sec sec-track">
+        <div class="sec-l">Theo dõi</div>
+        <div class="sec-b g4">
+          <div class="f"><label>Trạng thái</label><div class="with-btn"><select class="in" data-f="status" ${it.status === 'returned' ? 'disabled' : ''}>${Object.entries(STATUS).filter(([k]) => k !== 'returned' || it.status === 'returned').map(([k, v]) => `<option value="${k}" ${it.status === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
+            ${it.id && can('orders') && ['ordered', 'arrived', 'received'].includes(it.status) ? `<button class="btn sm" type="button" data-act="return" title="Khách trả hàng / hoàn tiền">↩ Trả</button>` : ''}</div></div>
+          <div class="f"><label>Mã đơn Shopee / Lazada</label><input class="in" data-f="platform_order_id" placeholder="Dán khi đặt hàng" value="${esc(it.platform_order_id || '')}"></div>
+          <div class="f"><label>Tiền thực đặt ${it.purchase_id ? `<a href="#/purchase" class="hint">${esc(it.purchase_code || 'lượt đặt')}</a>` : ''}</label>${it.purchase_id ? `<div class="in money tot-box" title="Phân bổ từ lượt đặt ${esc(it.purchase_code || '')}">${money(it.cost)}</div>` : `<input class="in money" data-f="cost" inputmode="numeric" placeholder="—" value="${it.cost != null ? money(it.cost) : ''}">`}</div>
+          <div class="f"><label>Kệ / túi</label><input class="in" data-f="shelf" placeholder="VD: B3" value="${esc(it.shelf || '')}"></div>
+        </div>
       </div>` : ''}
     </div>`;
   }
   function renderRows(focusIdx, focusField) {
     $rows.innerHTML = q.items.map(rowHtml).join('');
     if (focusIdx != null) {
+      if (q.items[focusIdx] && q.items[focusIdx]._open === false) { q.items[focusIdx]._open = true; $rows.innerHTML = q.items.map(rowHtml).join(''); }
       const el = $rows.querySelector(`.row-it[data-i="${focusIdx}"] [data-f="${focusField || 'link'}"]`);
       if (el) el.focus();
     }
@@ -434,7 +456,11 @@ async function viewQuote(id) {
       if (!row) return;
       const feeIn = row.querySelector('[data-f="fee"]');
       if (feeIn && document.activeElement !== feeIn) feeIn.value = money(it.fee);
-      row.querySelector('[data-tot]').textContent = money(it.qty * it.unit_price + it.shipping + it.fee);
+      const tt = money(it.qty * it.unit_price + it.shipping + it.fee);
+      row.querySelector('[data-tot]').textContent = tt;
+      const t2 = row.querySelector('[data-tot2]'); if (t2) t2.textContent = tt;
+      const ti = row.querySelector('[data-title]');
+      if (ti) { ti.textContent = it.name || it.name_vi || 'Sản phẩm mới'; ti.classList.toggle('muted', !(it.name || it.name_vi)); }
     });
     const t = totalsOf(q);
     const formula = feeFormulaText(q);
@@ -642,6 +668,7 @@ async function viewQuote(id) {
       if (p && p !== it.platform) {
         it.platform = p;
         row.querySelector('[data-f="platform"]').value = p;
+        row.querySelector('[data-f="platform"]').className = 'in plat p-' + p;
         const def = state.settings && state.settings.fees[p];
         if (def && !it.shipping) { it.shipping = def.ship || 0; row.querySelector('[data-f="shipping"]').value = money(it.shipping); }
       }
@@ -662,6 +689,7 @@ async function viewQuote(id) {
     const it = q.items[i];
     if (f === 'platform') {
       it.platform = e.target.value;
+      e.target.className = 'in plat p-' + it.platform;
       dirty = true;
       updateComputed();
     } else if (f === 'status') {
@@ -687,8 +715,11 @@ async function viewQuote(id) {
       if (q.items.length === 1) { q.items = [newItem()]; } else q.items.splice(i, 1);
       dirty = true; renderRows();
     } else if (act === 'dup') {
-      const c = { ...q.items[i], id: null, status: null, platform_order_id: '', cost: null, shelf: '', variation: '', variation2: '' };
+      const c = { ...q.items[i], id: null, status: null, platform_order_id: '', cost: null, shelf: '', variation: '', variation2: '', _open: true, purchase_id: null };
       q.items.splice(i + 1, 0, c); dirty = true; renderRows(i + 1, 'variation');
+    } else if (act === 'toggle') {
+      q.items[i]._open = q.items[i]._open === false;
+      renderRows(q.items[i]._open ? i : null, 'name');
     } else if (act === 'return') {
       returnModal(q.items[i]);
     } else if (act === 'fee-auto') {
@@ -702,10 +733,16 @@ async function viewQuote(id) {
   });
   function addItem() {
     const last = q.items[q.items.length - 1];
+    if (q.items.length >= 3) q.items.forEach((x) => { x._open = false; });
     q.items.push(newItem(last ? last.platform : 'shopee'));
     dirty = true; renderRows(q.items.length - 1, 'link');
   }
   view.querySelector('#add').addEventListener('click', addItem);
+  view.querySelector('#fold').addEventListener('click', () => {
+    const anyOpen = q.items.some((x) => x._open !== false);
+    q.items.forEach((x) => { x._open = !anyOpen; });
+    renderRows();
+  });
 
   // ---- save / share ----
   function payload() {
@@ -723,7 +760,8 @@ async function viewQuote(id) {
     saving = (async () => {
       const r = q.id ? await api('PUT', '/orders/' + q.id, payload()) : await api('POST', '/orders', payload());
       const wasNew = !q.id;
-      q = { ...r.order, items: r.items.map((i) => ({ ...i })), payments: r.payments || [] };
+      const openState = q.items.map((x) => x._open);
+      q = { ...r.order, items: r.items.map((x, k) => ({ ...x, _open: openState[k] })), payments: r.payments || [] };
       dirty = false;
       if (wasNew) history.replaceState(null, '', '#/quote/' + q.id);
       view.querySelector('#qcode').textContent = '#' + q.code;

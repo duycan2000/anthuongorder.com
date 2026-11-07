@@ -112,24 +112,6 @@ table.t tr.sel td{background:var(--gll)}
 .ac-list div.on,.ac-list div:hover{background:var(--gll)}
 .ac-list small{color:var(--mut)}
 .items-h{display:grid;grid-template-columns:24px minmax(0,2fr) minmax(0,1fr) 50px 104px 84px 84px 96px;gap:8px;padding:10px 14px;border-bottom:1px solid var(--line);font-size:11px;text-transform:uppercase;letter-spacing:.3px;color:var(--mut);font-weight:600;background:#F7F9F8;border-radius:14px 14px 0 0}
-.row-it{padding:10px 14px;border-bottom:1px solid var(--line2)}
-.row-it:focus-within{background:var(--gll)}
-.row-it .r1{display:grid;grid-template-columns:24px minmax(0,1fr) minmax(0,1fr) 100px auto;gap:8px;align-items:center}
-.row-it .r2{display:grid;grid-template-columns:24px minmax(0,1.6fr) minmax(0,1fr) minmax(0,1fr);gap:8px;align-items:center;margin-top:6px}
-.row-it .r2b{display:grid;grid-template-columns:24px 92px minmax(0,1.2fr) minmax(0,1fr) minmax(0,1fr) minmax(0,1fr);gap:8px;align-items:center;margin-top:6px}
-.fx{position:relative;display:block;margin:0}
-.fx:before{content:attr(data-tag);position:absolute;left:9px;top:50%;transform:translateY(-50%);font-size:10.5px;font-weight:700;letter-spacing:.3px;text-transform:uppercase;color:var(--mut);pointer-events:none;z-index:1}
-.row-it .fx .in{padding-left:52px}
-.row-it .fx[data-tag="SL"] .in,.row-it .fx[data-tag="EN"] .in{padding-left:34px}
-.row-it .fx .in.auto{background:var(--gll)}
-.row-it .r3{display:grid;grid-template-columns:24px 150px minmax(0,1.4fr) minmax(0,1fr) minmax(0,.8fr);gap:8px;align-items:center;margin-top:6px}
-.row-it .idx{font-weight:700;color:var(--mut);text-align:center}
-.row-it .tot{font-weight:700;text-align:right;font-variant-numeric:tabular-nums}
-.row-it .acts{display:flex;gap:2px;justify-content:flex-end}
-.row-it .in{min-height:34px;padding:6px 9px}
-.row-it .lnk{position:relative}
-.row-it .fee-wrap{position:relative}
-.row-it .fee-wrap .reset{position:absolute;right:4px;top:50%;transform:translateY(-50%);border:0;background:none;color:var(--mut);cursor:pointer;font-size:12px;padding:2px 4px}
 .ic{border:0;background:none;cursor:pointer;color:var(--mut);padding:5px;border-radius:7px;display:inline-flex}
 .ic:hover{background:var(--line2);color:var(--ink)}
 .ic svg{width:16px;height:16px}
@@ -181,6 +163,47 @@ table.t tr.sel td{background:var(--gll)}
 .toast.ok{background:var(--g)}
 .toast a{color:#fff;font-weight:700}
 @keyframes tin{from{transform:translateY(8px);opacity:0}to{transform:none;opacity:1}}
+
+/* item card (quote editor) */
+.row-it{padding:12px 16px 14px;border-bottom:1px solid var(--line)}
+.row-it:focus-within{background:#FBFDFC;box-shadow:inset 3px 0 0 var(--g)}
+.row-it.off{opacity:.55}
+.it-head{display:flex;align-items:center;gap:10px;margin-bottom:10px;min-width:0}
+.it-no{flex:none;width:26px;height:26px;border-radius:8px;background:var(--g);color:#fff;font-weight:800;font-size:13px;display:flex;align-items:center;justify-content:center}
+.row-it select.plat{width:auto;min-height:28px;padding:2px 26px 2px 10px;border-radius:20px;font-weight:700;font-size:12.5px;border:0;flex:none}
+.row-it select.plat.p-shopee{background-color:var(--shl);color:var(--sh)} .row-it select.plat.p-lazada{background-color:var(--lzl);color:var(--lz)}
+.row-it select.plat.p-tiki{background-color:var(--tkl);color:var(--tk)} .row-it select.plat.p-other{background-color:#EEF1F0;color:#4B5753}
+.it-title-wrap{flex:1;min-width:0;cursor:pointer}
+.it-title{min-width:0;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.it-meta{font-size:12.5px;color:var(--mut);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;font-variant-numeric:tabular-nums}
+.row-it.collapsed{padding-bottom:10px}
+.row-it.collapsed .it-head{margin-bottom:0}
+.row-it.collapsed .sec{display:none}
+.row-it.collapsed:hover{background:#FAFCFB}
+.row-it .chev{font-size:13px;width:28px;justify-content:center}
+.it-sum{flex:none;text-align:right;font-variant-numeric:tabular-nums;line-height:1.15}
+.it-sum span{display:block;font-size:10.5px;color:var(--mut);font-weight:600;text-transform:uppercase}
+.it-sum b{font-size:16px}
+.row-it .acts{display:flex;gap:2px;flex:none}
+.row-it .sec{display:grid;grid-template-columns:78px minmax(0,1fr);gap:10px;align-items:start;padding:8px 0;border-top:1px dashed var(--line2)}
+.row-it .sec-l{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.4px;color:var(--mut);padding-top:22px}
+.row-it .sec-b{display:grid;gap:8px;min-width:0}
+.row-it .g2{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:8px}
+.row-it .g3{display:grid;grid-template-columns:minmax(0,2fr) minmax(0,1fr) minmax(0,1fr);gap:8px}
+.row-it .g4{grid-template-columns:minmax(0,1.3fr) minmax(0,1.3fr) minmax(0,1fr) minmax(0,.7fr)}
+.row-it .f{min-width:0;position:relative}
+.row-it .f>label{display:block;font-size:11px;font-weight:600;color:var(--ink2);margin-bottom:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.row-it .hint{font-weight:500;color:var(--mut);text-decoration:none}
+.row-it .in{min-height:36px;padding:7px 10px}
+.row-it .with-btn{display:flex;gap:6px}
+.row-it .with-btn .in{flex:1;min-width:0}
+.row-it .calc{grid-template-columns:72px 14px minmax(0,1.3fr) 14px minmax(0,1fr) 14px minmax(0,1fr) 14px minmax(0,1.15fr);align-items:end}
+.row-it .op{text-align:center;color:var(--mut);font-weight:700;padding-bottom:9px}
+.row-it .tot-box{display:flex;align-items:center;justify-content:flex-end;background:#F3F6F4;font-weight:800;border-color:transparent}
+.row-it .f-tot .tot-box{background:var(--gl);color:var(--g)}
+.row-it .in.auto{background:var(--gll);color:var(--g);font-weight:600}
+.row-it .fee-wrap .reset{position:absolute;right:4px;bottom:8px;border:0;background:none;color:var(--mut);cursor:pointer;font-size:13px;padding:2px 4px}
+.row-it .sec-track{background:#F8FAF9;margin:6px -16px -14px;padding:10px 16px 12px;border-top:1px solid var(--line2)}
 
 /* ---------- money / profit ---------- */
 .money-grid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}
@@ -255,7 +278,6 @@ table.t tr.sel td{background:var(--gll)}
 /* ---------- responsive ---------- */
 @media (max-width:1180px){
   .qe{grid-template-columns:minmax(0,1fr) 280px}
-  .row-it .r2b{grid-template-columns:20px 80px minmax(0,1.2fr) minmax(0,1fr) minmax(0,1fr) minmax(0,1fr)}
 }
 @media (max-width:960px){
   .side{display:none}
@@ -272,19 +294,20 @@ table.t tr.sel td{background:var(--gll)}
   .cust-grid > div:first-child{grid-column:1/-1}
   .items-h{display:none}
   .row-it{padding:12px;border:1px solid var(--line);border-radius:12px;margin:10px;background:#fff}
-  .row-it .r1{grid-template-columns:24px minmax(0,1fr) 96px}
-  .row-it .r1 .lnk{grid-column:2/3}
-  .row-it .r1 .vi{grid-column:1/-1;grid-row:2}
-  .row-it .r1 select{grid-column:3;grid-row:1}
-  .row-it .r1 .acts{grid-column:1/-1;grid-row:3}
-  .row-it .r2{grid-template-columns:1fr 1fr}
-  .row-it .r2 .idx,.row-it .r2b .idx{display:none}
-  .row-it .r2 .c-name{grid-column:1/-1}
-  .row-it .r2b{grid-template-columns:1fr 1fr}
-  .row-it .r2b .c-tot{grid-column:1/-1;font-size:15px}
-  .row-it .r3 [data-lbl]:before{content:attr(data-lbl);display:block;font-size:10.5px;color:var(--mut);font-weight:600;text-transform:uppercase;margin-bottom:2px}
-  .row-it .r3{grid-template-columns:1fr 1fr}
-  .row-it .r3 .idx{display:none}
+  .it-head{display:grid;grid-template-columns:auto auto minmax(0,1fr) auto;grid-template-areas:"no plat pill acts" "title title title sum";gap:8px;align-items:center}
+  .it-no{grid-area:no} .row-it select.plat{grid-area:plat} .it-head .pill{grid-area:pill;justify-self:start}
+  .row-it .acts{grid-area:acts}
+  .it-title-wrap{grid-area:title}
+  .it-title{white-space:normal}
+  .it-sum{grid-area:sum;align-self:end}
+  .row-it .sec{grid-template-columns:1fr;gap:4px}
+  .row-it .sec-l{padding-top:0}
+  .row-it .g2,.row-it .g3{grid-template-columns:1fr}
+  .row-it .g4{grid-template-columns:1fr 1fr}
+  .row-it .calc{grid-template-columns:1fr 1fr}
+  .row-it .op{display:none}
+  .row-it .f-tot{grid-column:1/-1}
+  .row-it .sec-track{margin:6px -12px -12px;padding:10px 12px 12px;border-radius:0 0 12px 12px}
   .qe-bottom{grid-template-columns:1fr}
   .money-grid{grid-template-columns:1fr}
   .tgrid{grid-template-columns:1fr}
