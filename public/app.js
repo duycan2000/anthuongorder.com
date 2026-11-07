@@ -1,7 +1,7 @@
 // An Thuong Order — internal app (vanilla JS SPA)
 import { renderQuoteImages, ensureFonts, canvasToBlob } from './quote-image.js';
 
-const CLIENT_VERSION = '0.4.0';
+const CLIENT_VERSION = '0.4.1';
 const $app = document.getElementById('app');
 
 // ---------------- utils ----------------
@@ -1045,6 +1045,14 @@ async function viewPurchase() {
         <div class="pq-panel"><div class="card pad" id="p-panel"></div></div>
       </div>
       <div class="pq-mbar hidden" id="p-mbar"></div>`;
+    // mobile: hide the floating summary bar while the amount panel itself is on screen
+    if ('IntersectionObserver' in window) {
+      const io = new IntersectionObserver(([e]) => {
+        const bar = body.querySelector('#p-mbar');
+        if (bar) bar.classList.toggle('away', e.isIntersecting);
+      }, { threshold: 0.05 });
+      io.observe(body.querySelector('.pq-panel'));
+    }
     const load = async () => {
       const term = body.querySelector('#p-q').value.trim();
       const r = await api('GET', `/purchasable?unpaid=${withUnpaid ? 1 : 0}&q=${encodeURIComponent(term)}`);
