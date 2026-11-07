@@ -2,7 +2,7 @@
 
 App nội bộ cho **An Thuong Order @ Linz Coffee**. Chạy trên **Cloudflare Workers + D1**, không cần build, không có dependency.
 
-**Phiên bản:** 0.5.1 (hiện ở màn đăng nhập)
+**Phiên bản:** 0.5.2 (hiện ở màn đăng nhập)
 
 ## Tính năng bản 0.1.0
 - Đăng nhập bằng username/mật khẩu (PBKDF2, khoá 15 phút sau 5 lần sai), phiên 30 ngày.

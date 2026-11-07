@@ -104,6 +104,7 @@ textarea.in{min-height:60px;resize:vertical}
 table.t{width:100%;border-collapse:collapse}
 table.t th{text-align:left;font-size:11.5px;text-transform:uppercase;letter-spacing:.3px;color:var(--mut);font-weight:600;padding:9px 10px;border-bottom:1px solid var(--line);background:#F7F9F8;position:sticky;top:0}
 table.t td{padding:10px;border-bottom:1px solid var(--line2);vertical-align:middle}
+table.t th.num,table.t td.num{text-align:right}
 table.t tr.click{cursor:pointer}
 table.t tr.click:hover td{background:#F7FAF9}
 table.t tr.sel td{background:var(--gll)}

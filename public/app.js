@@ -1,7 +1,7 @@
 // An Thuong Order — internal app (vanilla JS SPA)
 import { renderQuoteImages, ensureFonts, canvasToBlob } from './quote-image.js';
 
-const CLIENT_VERSION = '0.5.1';
+const CLIENT_VERSION = '0.5.2';
 const NATIVE = typeof window.AndroidBridge !== 'undefined'; // running inside the Android app
 const $app = document.getElementById('app');
 
