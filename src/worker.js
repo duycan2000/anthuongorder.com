@@ -3,7 +3,7 @@ import { SCHEMA, MIGRATIONS, SCHEMA_VERSION, DEFAULT_SETTINGS } from './schema.j
 import { DEMO_COUNT, planDemoCustomer, shiftDate } from './demo.js';
 import { renderPublicQuote, renderNotFound } from './public-quote.js';
 
-export const APP_VERSION = '0.4.2';
+export const APP_VERSION = '0.5.0';
 
 const PERMS = ['quotes', 'orders', 'settings', 'users'];
 const STATUSES = ['quoted', 'paid', 'ordered', 'arrived', 'received', 'cancelled', 'returned'];
@@ -25,6 +25,19 @@ export default {
       const m = path.match(/^\/q\/([A-Za-z0-9]{4,12})\/?$/);
       if (m) return await publicQuote(env, m[1].toUpperCase(), url);
       if (path === '/q' || path.startsWith('/q/')) return html(renderNotFound(), 404);
+      if (path.startsWith('/download/')) {
+        const res = await env.ASSETS.fetch(request);
+        const ct = res.headers.get('content-type') || '';
+        if (!res.ok || ct.includes('text/html')) return new Response('Not found', { status: 404 });
+        if (path.endsWith('.apk')) {
+          const h = new Headers(res.headers);
+          h.set('content-type', 'application/vnd.android.package-archive');
+          h.set('content-disposition', 'attachment; filename="AnThuongOrder.apk"');
+          h.set('cache-control', 'no-cache');
+          return new Response(res.body, { status: res.status, headers: h });
+        }
+        return res;
+      }
       return env.ASSETS.fetch(request);
     } catch (err) {
       console.error(err);

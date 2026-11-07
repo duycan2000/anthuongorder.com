@@ -29,6 +29,16 @@ a{color:var(--g)}
 .login .ver{display:flex;justify-content:space-between;margin-top:18px;padding-top:14px;border-top:1px solid var(--line2);color:var(--mut);font-size:12px}
 .login .ver b{color:var(--g)}
 
+/* apk download on login */
+.apk{display:flex;align-items:center;gap:12px;margin-top:14px;padding:12px 14px;border-radius:14px;background:#F3FAF7;border:1px solid #C5DDD3;text-decoration:none;color:var(--ink)}
+.apk:hover{background:var(--gl)}
+.apk.off{opacity:.6;pointer-events:none}
+.apk-ic{flex:none;width:38px;height:38px;border-radius:10px;background:#3DDC84;color:#073042;display:flex;align-items:center;justify-content:center}
+.apk-ic svg{width:24px;height:24px}
+.apk b{display:block;font-size:14px}
+.apk small{display:block;color:var(--mut);font-size:12px}
+.apk-dl{margin-left:auto;font-weight:800;color:var(--g);font-size:18px}
+
 /* ---------- shell ---------- */
 .shell{display:flex;min-height:100vh}
 .side{width:var(--sidebar);flex:none;background:var(--g);color:#D8E8E1;padding:18px 12px;position:sticky;top:0;height:100vh;display:flex;flex-direction:column}

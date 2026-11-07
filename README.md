@@ -2,7 +2,7 @@
 
 App nội bộ cho **An Thuong Order @ Linz Coffee**. Chạy trên **Cloudflare Workers + D1**, không cần build, không có dependency.
 
-**Phiên bản:** 0.4.2 (hiện ở màn đăng nhập)
+**Phiên bản:** 0.5.0 (hiện ở màn đăng nhập)
 
 ## Tính năng bản 0.1.0
 - Đăng nhập bằng username/mật khẩu (PBKDF2, khoá 15 phút sau 5 lần sai), phiên 30 ngày.
@@ -32,6 +32,13 @@ App nội bộ cho **An Thuong Order @ Linz Coffee**. Chạy trên **Cloudflare 
 6. Vào **Cài đặt**: điền thông tin Wise, và "Tên miền link báo giá" = `https://app.anthuongorder.com`.
 
 Mỗi lần push lên nhánh `main`, Cloudflare tự build và deploy lại.
+
+## App Android (APK)
+- Thư mục `android/`: app Android mở `https://app.anthuongorder.com` toàn màn hình, giữ đăng nhập, mở link WhatsApp / Shopee / Maps bằng app tương ứng, nút **Gửi ảnh qua WhatsApp** gửi thẳng ảnh báo giá vào chat của khách, **Lưu ảnh** vào Thư viện.
+- Mỗi lần sửa `android/**` và push, GitHub Actions (`.github/workflows/android.yml`) tự build APK đã ký và đưa vào `public/download/anthuongorder.apk` → Cloudflare deploy → link **Tải app Android** ở trang đăng nhập.
+- Có thể chạy tay: GitHub → Actions → *Android APK* → *Run workflow*.
+- Khoá ký: `android/signing/release.jks` (alias `atorder`). Giữ repo ở chế độ **Private**. Có thể đặt secret `ANDROID_KEYSTORE_PASSWORD` để không dùng mật khẩu mặc định trong workflow.
+- Cài lần đầu: Android sẽ hỏi cho phép "Cài ứng dụng không rõ nguồn gốc" cho trình duyệt — chọn Cho phép.
 
 ## Chạy thử trên máy
 ```bash

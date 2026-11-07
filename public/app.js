@@ -1,7 +1,8 @@
 // An Thuong Order — internal app (vanilla JS SPA)
 import { renderQuoteImages, ensureFonts, canvasToBlob } from './quote-image.js';
 
-const CLIENT_VERSION = '0.4.2';
+const CLIENT_VERSION = '0.5.0';
+const NATIVE = typeof window.AndroidBridge !== 'undefined'; // running inside the Android app
 const $app = document.getElementById('app');
 
 // ---------------- utils ----------------
@@ -252,7 +253,17 @@ async function viewLogin() {
     <div class="field"><label class="l" for="p">Mật khẩu</label><input class="in" id="p" name="password" type="password" autocomplete="current-password" required></div>
     <button class="btn p" type="submit">Đăng nhập</button>
     <div class="ver"><span>© An Thuong Order @ Linz Coffee</span><span>Phiên bản <b>v${esc(state.serverVersion || CLIENT_VERSION)}</b></span></div>
+    ${NATIVE ? '' : `<a class="apk" id="apk" href="/download/anthuongorder.apk" download="AnThuongOrder.apk">
+      <span class="apk-ic"><svg viewBox="0 0 24 24" fill="currentColor"><path d="M17.6 9.48l1.84-3.18a.38.38 0 0 0-.66-.38l-1.86 3.22a11.4 11.4 0 0 0-9.84 0L5.22 5.92a.38.38 0 0 0-.66.38L6.4 9.48A10.8 10.8 0 0 0 1 18h22a10.8 10.8 0 0 0-5.4-8.52zM7 15.25a1.25 1.25 0 1 1 0-2.5 1.25 1.25 0 0 1 0 2.5zm10 0a1.25 1.25 0 1 1 0-2.5 1.25 1.25 0 0 1 0 2.5z"/></svg></span>
+      <span><b>Tải app Android (APK)</b><small id="apk-meta">Cài trên điện thoại Android</small></span><span class="apk-dl">↓</span></a>`}
   </form></div>`;
+  const apk = $app.querySelector('#apk');
+  if (apk) {
+    fetch('/download/apk.json', { cache: 'no-store' }).then((r) => (r.ok ? r.json() : null)).then((m) => {
+      if (m && m.version) apk.querySelector('#apk-meta').textContent = `Phiên bản ${m.version} · ${(m.size / 1048576).toFixed(1)} MB · cài trên điện thoại Android`;
+      else { apk.classList.add('off'); apk.querySelector('#apk-meta').textContent = 'Đang chuẩn bị file APK, vui lòng thử lại sau'; }
+    }).catch(() => {});
+  }
   const form = $app.querySelector('form');
   form.addEventListener('submit', async (e) => {
     e.preventDefault();
@@ -790,12 +801,14 @@ async function viewQuote(id) {
   }
   function downloadImage(idx = 0) {
     const cv = canvases[idx]; if (!cv) return;
+    if (NATIVE) { window.AndroidBridge.saveImage(cv.toDataURL('image/png'), `${q.code || 'quote'}${canvases.length > 1 ? `-${idx + 1}` : ''}.png`); return; }
     const a = document.createElement('a');
     a.download = `${q.code || 'quote'}${canvases.length > 1 ? `-${idx + 1}` : ''}.png`;
     a.href = cv.toDataURL('image/png'); a.click();
   }
   async function shareNative() {
     if (dirty || !q.id) await save(true);
+    if (NATIVE) { window.AndroidBridge.shareImages(JSON.stringify(canvases.map((cv) => cv.toDataURL('image/png'))), waMessage(q), q.code || 'quote'); return; }
     const files = await Promise.all(canvases.map(async (cv, i) => new File([await canvasToBlob(cv)], `${q.code}${canvases.length > 1 ? '-' + (i + 1) : ''}.png`, { type: 'image/png' })));
     if (navigator.canShare && navigator.canShare({ files })) {
       try { await navigator.share({ files, text: waMessage(q) }); } catch (_) {}
@@ -812,7 +825,7 @@ async function viewQuote(id) {
     el.innerHTML = editable ? `
       <button class="btn" id="b-save">Lưu <span class="kbd">Ctrl+S</span></button>
       <button class="btn" id="b-dl">${I.dl} Tải ảnh</button>
-      ${mobile && navigator.share ? `<button class="btn wa" id="b-share">${I.share} Chia sẻ ảnh</button>` : `<button class="btn p" id="b-copy">${I.copy} Copy ảnh</button>
+      ${NATIVE ? `<button class="btn" id="b-share">${I.share} Chia sẻ</button><button class="btn wa" id="b-nwa">${I.wa} Gửi ảnh qua WhatsApp</button>` : mobile && navigator.share ? `<button class="btn wa" id="b-share">${I.share} Chia sẻ ảnh</button>` : `<button class="btn p" id="b-copy">${I.copy} Copy ảnh</button>
       <button class="btn wa" id="b-wa">${I.wa} Copy ảnh + WhatsApp</button>`}` : '';
     const share = view.querySelector('#share');
     if (q.public_id) {
@@ -840,6 +853,13 @@ async function viewQuote(id) {
       copyImage(0, () => openWhatsApp(win)).catch(() => { if (win) win.close(); });
     };
     const bs = el.querySelector('#b-share'); if (bs) bs.onclick = () => shareNative().catch((e) => toast(e.message, 'err'));
+    const bn = el.querySelector('#b-nwa');
+    if (bn) bn.onclick = async () => {
+      try {
+        if (dirty || !q.id) await save(true); else await doPreview();
+        window.AndroidBridge.shareToWhatsApp(JSON.stringify(canvases.map((cv) => cv.toDataURL('image/png'))), waMessage(q), waDigits(q.customer_phone), q.code || 'quote');
+      } catch (e) { toast(e.message, 'err'); }
+    };
   }
   view.querySelector('#pages').addEventListener('click', (e) => {
     const c = e.target.closest('[data-copy]'); if (c) copyImage(+c.dataset.copy);
