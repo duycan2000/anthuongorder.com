@@ -1,7 +1,7 @@
 // An Thuong Order — internal app (vanilla JS SPA)
 import { renderQuoteImages, ensureFonts, canvasToBlob } from './quote-image.js';
 
-const CLIENT_VERSION = '0.6.2';
+const CLIENT_VERSION = '0.6.3';
 // must match NEXT_STATUS in src/worker.js
 const NEXT_STATUS = { quoted: ['cancelled'], paid: ['ordered', 'cancelled'], ordered: ['arrived', 'paid', 'cancelled'], arrived: ['received', 'ordered'], received: ['arrived'], cancelled: ['quoted', 'paid'], returned: [] };
 const canMove = (from, to) => (NEXT_STATUS[from] || []).includes(to);
@@ -446,7 +446,8 @@ async function viewQuote(id) {
         <div class="sec-l">Theo dõi</div>
         <div class="sec-b g4">
           <div class="f"><label>Trạng thái</label><div class="with-btn"><select class="in" data-f="status" ${it.status === 'returned' ? 'disabled' : ''}>${Object.entries(STATUS).filter(([k]) => k === it.status || (k !== 'returned' && canMove(it.status, k))).map(([k, v]) => `<option value="${k}" ${it.status === k ? 'selected' : ''}>${v}</option>`).join('')}</select>
-            ${it.id && can('orders') && ['ordered', 'arrived', 'received'].includes(it.status) ? `<button class="btn sm" type="button" data-act="return" title="Khách trả hàng / hoàn tiền">↩ Trả</button>` : ''}</div></div>
+            ${it.id && can('orders') && ['ordered', 'arrived', 'received'].includes(it.status) ? `<button class="btn sm" type="button" data-act="return" title="Khách trả hàng / hoàn tiền">↩ Trả</button>` : ''}
+            ${it.id && can('orders') && it.status !== 'returned' ? `<button class="btn sm" type="button" data-act="fixst" title="Bấm nhầm? Sửa trạng thái">✎</button>` : ''}</div></div>
           <div class="f"><label>Mã đơn Shopee / Lazada</label><input class="in" data-f="platform_order_id" placeholder="Dán khi đặt hàng" value="${esc(it.platform_order_id || '')}"></div>
           <div class="f"><label>Tiền thực đặt ${it.purchase_id ? `<a href="#/purchase" class="hint">${esc(it.purchase_code || 'lượt đặt')}</a>` : ''}</label>${it.purchase_id ? `<div class="in money tot-box" title="Phân bổ từ lượt đặt ${esc(it.purchase_code || '')}">${money(it.cost)}</div>` : `<input class="in money" data-f="cost" inputmode="numeric" placeholder="—" value="${it.cost != null ? money(it.cost) : ''}">`}</div>
           <div class="f"><label>Kệ / túi</label><input class="in" data-f="shelf" placeholder="VD: B3" value="${esc(it.shelf || '')}"></div>
@@ -745,6 +746,11 @@ async function viewQuote(id) {
     } else if (act === 'toggle') {
       q.items[i]._open = q.items[i]._open === false;
       renderRows(q.items[i]._open ? i : null, 'name');
+    } else if (act === 'fixst') {
+      const it = q.items[i];
+      statusFixModal({ ...it, customer_name: q.customer_name }, async () => {
+        try { applyServer(await api('GET', '/orders/' + q.id)); } catch (_) {}
+      });
     } else if (act === 'return') {
       returnModal(q.items[i]);
     } else if (act === 'fee-auto') {
@@ -1054,6 +1060,7 @@ async function viewLookup() {
   const validFor = (to) => { const list = selItems(); return list.length > 0 && list.every((i) => canMove(i.status, to)); };
   const statusBtns = (cls = 'btn') => ['arrived', 'received'].filter(validFor).map((s) => `<button class="${cls}" data-set="${s}">${STATUS[s]}${s === 'arrived' ? ' <span class="kbd">A</span>' : ' <span class="kbd">R</span>'}</button>`).join('');
   // per-card actions follow the flow: quoted -> record payment, paid -> purchase, ordered -> arrived, arrived -> picked up
+  const fixLink = (it) => (it.status === 'returned' ? '' : `<button class="fix-st" data-fix="${it.id}" title="Bấm nhầm? Sửa trạng thái">✎ Sửa trạng thái</button>`);
   const cardActions = (it) => {
     if (it.status === 'quoted') return `<div class="acts1"><span class="muted">Chờ khách trả tiền</span><a class="btn" href="#/quote/${it.order_id}">Mở đơn · ghi nhận tiền</a></div>`;
     if (it.status === 'paid') return `<div class="acts1"><span class="muted">Đã trả tiền, chưa đặt</span><a class="btn p" href="#/purchase" data-buy="${esc(it.customer_name)}">Đặt hàng →</a></div>`;
@@ -1075,13 +1082,13 @@ async function viewLookup() {
           <td><a href="#/quote/${it.order_id}"><b>${esc(it.customer_name)}</b></a><div class="muted" style="font-size:12.5px">${esc(it.code)} · về ${it.order_arrived}/${it.order_items}</div></td>
           <td><input class="inline-in" data-poi="${it.id}" value="${esc(it.platform_order_id || '')}" placeholder="dán mã…"></td>
           <td class="nowrap">${fmtDate(it.order_date)}</td>
-          <td><span class="pill s-${it.status}">${STATUS[it.status]}</span></td>
+          <td class="nowrap"><span class="pill s-${it.status}">${STATUS[it.status]}</span>${it.status !== 'returned' ? ` <button class="ic" data-fix="${it.id}" title="Bấm nhầm? Sửa trạng thái">✎</button>` : ''}</td>
           <td class="num nowrap">${daysSince(it.status_at)} ngày</td></tr>`).join('')}</tbody></table>`;
       view.querySelector('#l-cards').innerHTML = items.map((it) => `<div class="card mc ${sel.has(it.id) ? 'sel' : ''}">
         <div class="top"><div style="min-width:0"><b>${esc(it.customer_name)}</b> <span class="muted">· ${esc(it.code)}</span></div><span class="pill s-${it.status}">${STATUS[it.status]}</span></div>
         <div style="margin-top:4px">${esc(it.name || it.name_vi || '—')}${vt(it) ? ` <span class="muted">· ${esc(vt(it))}</span>` : ''}</div>
         <div class="muted" style="font-size:12.5px">${it.name_vi && it.name ? esc(it.name_vi) + ' · ' : ''}${it.platform_order_id ? esc(it.platform_order_id) + ' · ' : ''}${daysSince(it.status_at)} ngày · ${it.order_arrived}/${it.order_items} món đã về</div>
-        ${cardActions(it)}</div>`).join('');
+        ${cardActions(it)}${fixLink(it)}</div>`).join('');
     }
     const bulk = view.querySelector('#l-bulk');
     const others = Object.keys(STATUS).filter((k) => !['arrived', 'received'].includes(k) && validFor(k));
@@ -1127,6 +1134,8 @@ async function viewLookup() {
   view.addEventListener('click', async (e) => {
     const chip = e.target.closest('[data-f]');
     if (chip && chip.classList.contains('chip')) { filter = chip.dataset.f; sessionStorage.setItem('at.lf', filter); sel.clear(); await load(); return; }
+    const fx = e.target.closest('[data-fix]');
+    if (fx) { const it = items.find((x) => x.id === +fx.dataset.fix); if (it) statusFixModal(it, () => load()); return; }
     const buy = e.target.closest('[data-buy]');
     if (buy) { sessionStorage.setItem('at.pq', buy.dataset.buy); return; }
     const one = e.target.closest('[data-one]');
@@ -1744,6 +1753,26 @@ async function viewSettings() {
 }
 
 // ---------------- users ----------------
+// Manual status correction (after a mis-click). Any status except 'returned' (use the return flow).
+function statusFixModal(it, onDone) {
+  const opts = ['quoted', 'paid', 'ordered', 'arrived', 'received', 'cancelled'];
+  modal(`<h3>Sửa trạng thái món</h3>
+    <div class="muted" style="margin:-6px 0 10px"><b style="color:var(--ink)">${esc(it.name || it.name_vi || 'Món')}</b>${it.customer_name ? ' · ' + esc(it.customer_name) : ''}</div>
+    <div class="fixlist">${opts.map((k) => `<label class="${k === it.status ? 'cur' : ''}"><input type="radio" name="st" value="${k}" ${k === it.status ? 'checked' : ''}><span class="pill s-${k}">${STATUS[k]}</span>${k === it.status ? '<small>đang chọn</small>' : ''}</label>`).join('')}</div>
+    <div class="note-warn">Chỉ dùng khi bấm nhầm. Đổi trạng thái ở đây không ghi nhận tiền hay lượt đặt; muốn ghi tiền khách trả hãy dùng nút “Ghi nhận tiền” trong đơn.</div>
+    <div class="actions"><button class="btn" data-close>Huỷ</button><button class="btn p" data-ok>Lưu trạng thái</button></div>`, (m, close) => {
+    m.querySelector('[data-ok]').onclick = async () => {
+      const to = m.querySelector('[name=st]:checked').value;
+      if (to === it.status) { close(); return; }
+      try {
+        await api('POST', '/items/status', { ids: [it.id], status: to, force: true });
+        close(); toast(`Đã sửa trạng thái thành “${STATUS[to]}”`, 'ok');
+        if (onDone) onDone(to);
+        refreshWaiting();
+      } catch (e) { toast(e.message, 'err'); }
+    };
+  });
+}
 function modal(html, onMount) {
   const bg = document.createElement('div');
   bg.className = 'modal-bg';

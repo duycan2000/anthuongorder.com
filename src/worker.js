@@ -3,7 +3,7 @@ import { SCHEMA, MIGRATIONS, SCHEMA_VERSION, DEFAULT_SETTINGS } from './schema.j
 import { DEMO_COUNT, planDemoCustomer, shiftDate } from './demo.js';
 import { renderPublicQuote, renderNotFound } from './public-quote.js';
 
-export const APP_VERSION = '0.6.2';
+export const APP_VERSION = '0.6.3';
 
 const PERMS = ['quotes', 'orders', 'settings', 'users'];
 const STATUSES = ['quoted', 'paid', 'ordered', 'arrived', 'received', 'cancelled', 'returned'];
@@ -1167,7 +1167,8 @@ async function bulkStatus(request, env, user) {
   const now = nowIso();
   const marks = ids.map(() => '?').join(',');
   const all = (await env.DB.prepare(`SELECT id, status, order_id FROM items WHERE id IN (${marks})`).bind(...ids).all()).results || [];
-  const rows = all.filter((r) => r.status === b.status || (NEXT_STATUS[r.status] || []).includes(b.status));
+  // force = manual correction after a mis-click (skips the normal flow, still logged)
+  const rows = b.force ? all.filter((r) => r.status !== 'returned' && b.status !== 'returned') : all.filter((r) => r.status === b.status || (NEXT_STATUS[r.status] || []).includes(b.status));
   const skipped = all.length - rows.length;
   if (!rows.length) {
     const from = [...new Set(all.map((r) => r.status))];
