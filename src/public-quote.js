@@ -167,7 +167,7 @@ export function renderPublicQuote({ order, items, settings, url, returns = [] })
   const wa = String(shop.whatsapp || '').replace(/\D/g, '');
   const waText = encodeURIComponent(`Hi! About my quote #${order.code}: ${url}`);
   const paidLabel = { cash: 'cash', wise: 'Wise', bank: 'bank transfer' }[order.payment_status];
-  const mapUrl = 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(shop.address || 'Linz Coffee 42 An Thuong 2 Da Nang');
+  const mapUrl = /^https:\/\/(www\.)?(google\.[a-z.]+\/maps|maps\.app\.goo\.gl|goo\.gl\/maps)/.test(shop.map_url || '') ? shop.map_url : 'https://www.google.com/maps/search/?api=1&query=' + encodeURIComponent(shop.address || 'An Thuong Order Linz Coffee 42 An Thuong 2 Da Nang');
   const place = (shop.address || 'Linz Coffee, 42 An Thuong 2').split(',').slice(0, 2).join(',');
 
   return `<!doctype html><html lang="en"><head><meta charset="utf-8">

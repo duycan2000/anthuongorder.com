@@ -1,7 +1,7 @@
 // An Thuong Order — internal app (vanilla JS SPA)
 import { renderQuoteImages, ensureFonts, canvasToBlob } from './quote-image.js';
 
-const CLIENT_VERSION = '0.6.0';
+const CLIENT_VERSION = '0.6.1';
 const NATIVE = typeof window.AndroidBridge !== 'undefined'; // running inside the Android app
 const $app = document.getElementById('app');
 
@@ -1467,7 +1467,7 @@ async function viewToday() {
       ${section('Đã nhận tiền, cần đặt hàng', 'Khách đã trả tiền, còn món chưa đặt trên Shopee / Lazada', r.to_order.length, `<table class="t"><tbody>${r.to_order.map((o) => `<tr><td><a href="#/quote/${o.id}"><b>${esc(o.customer_name)}</b></a><div class="muted" style="font-size:12px">${esc(o.code)} · còn ${o.n}/${o.total} món · chờ ${ago(o.since)}</div></td><td class="num"><b>${money(o.value)}</b></td><td class="num"><a class="btn sm p" href="#/purchase" data-buy="${esc(o.customer_name)}">Đặt →</a></td></tr>`).join('')}</tbody></table>`, 'info')}
       ${section('Đặt lâu chưa về', `Đã đặt từ ${rm.order_days} ngày trở lên — nên kiểm tra với shop`, r.late.length, `<table class="t"><tbody>${r.late.map((i) => `<tr><td><b>${esc(i.name || i.name_vi || '—')}</b>${vt(i) ? ` <span class="muted">· ${esc(vt(i))}</span>` : ''}<div class="muted" style="font-size:12px"><a href="#/quote/${i.order_id}">${esc(i.customer_name)}</a> · ${esc(i.code)}${i.purchase_code ? ' · ' + esc(i.purchase_code) : ''}${i.platform_order_id ? ' · <span class="kbd">' + esc(i.platform_order_id) + '</span>' : ''}</div></td><td class="num nowrap" style="color:var(--red);font-weight:700">${ago(i.status_at)}</td></tr>`).join('')}</tbody></table>`, 'bad')}
       ${section('Hàng về, khách chưa lấy', `Hàng ở quán từ ${rm.pickup_days} ngày trở lên`, r.pickup.length, `<table class="t"><tbody>${r.pickup.map((o) => `<tr><td><a href="#/quote/${o.id}"><b>${esc(o.customer_name)}</b></a><div class="muted" style="font-size:12px">${esc(o.code)} · ${o.n} món${o.shelves ? ' · kệ ' + esc(o.shelves) : ''} · ${ago(o.since)}</div></td>
-        <td class="num">${waBtn(o.customer_phone, `Hi ${o.customer_name}! Your ${o.n} item${o.n > 1 ? 's' : ''} from order #${o.code} ${o.n > 1 ? 'are' : 'is'} ready for pickup at Linz Coffee, 42 An Thuong 2. When is a good time for you? Details: ${linkFor(o.public_id)}`)}</td>
+        <td class="num">${waBtn(o.customer_phone, `Hi ${o.customer_name}! Your ${o.n} item${o.n > 1 ? 's' : ''} from order #${o.code} ${o.n > 1 ? 'are' : 'is'} ready for pickup at Linz Coffee, 42 An Thuong 2. When is a good time for you? Details: ${linkFor(o.public_id)}${state.settings && state.settings.shop.map_url ? '\nMap: ' + state.settings.shop.map_url : ''}`)}</td>
         <td class="num">${can('orders') ? `<button class="btn sm" data-picked="${o.ids}">Đã lấy</button>` : ''}</td></tr>`).join('')}</tbody></table>`, 'ok')}
     </div>
     <p class="muted" style="margin-top:12px;font-size:12px">Số ngày nhắc chỉnh được trong <a href="#/settings">Cài đặt</a>.</p>`;
@@ -1680,6 +1680,7 @@ async function viewSettings() {
         ${shopField('payment', 'Cách thanh toán (tiếng Anh)', 'Cash at Linz Coffee, or via Wise.')}
         ${shopField('footer', 'Dòng cuối', 'We order after payment and message you when it arrives.')}
         ${shopField('wise', 'Thông tin Wise (hiện trên trang báo giá)', 'Wisetag @… hoặc tên + số tài khoản nhận', true)}
+        ${shopField('map_url', 'Link Google Maps của shop', 'https://www.google.com/maps/place/…')}
         ${shopField('public_base', 'Tên miền link báo giá (để trống = tên miền app)', 'https://app.anthuongorder.com')}
       </div></div>
     ${can('users') ? `<div class="card pad" style="margin-top:14px" id="demo-box"><h3 style="margin-bottom:6px">Dữ liệu demo</h3>

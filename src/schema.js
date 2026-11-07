@@ -169,5 +169,6 @@ export const DEFAULT_SETTINGS = {
     wise: '',
     footer: 'We order after payment and message you when it arrives.',
     public_base: '',
+    map_url: 'https://www.google.com/maps/place/An+Thuong+Order+-+Shopping+assistant+for+expats,+An+Th%C6%B0%E1%BB%A3ng+2,+Ngu+Hanh+Son,+Da+Nang/@16.0502557,108.2496147,15z/data=!4m2!3m1!1s0x3142177dcc0d9ccf:0xdfea7641997af543',
   },
 };
