@@ -57,7 +57,7 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
           git add public/download
-          git commit -m "APK build 1.0.${{ github.run_number }} [skip ci]" || exit 0
+          git commit -m "APK build 1.0.${{ github.run_number }}" || exit 0
           git pull --rebase origin main
           git push origin HEAD:main
 
