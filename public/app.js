@@ -1,7 +1,7 @@
 // An Thuong Order — internal app (vanilla JS SPA)
 import { renderQuoteImages, ensureFonts, canvasToBlob } from './quote-image.js';
 
-const CLIENT_VERSION = '0.6.3';
+const CLIENT_VERSION = '0.7.0';
 // must match NEXT_STATUS in src/worker.js
 const NEXT_STATUS = { quoted: ['cancelled'], paid: ['ordered', 'cancelled'], ordered: ['arrived', 'paid', 'cancelled'], arrived: ['received', 'ordered'], received: ['arrived'], cancelled: ['quoted', 'paid'], returned: [] };
 const canMove = (from, to) => (NEXT_STATUS[from] || []).includes(to);
@@ -58,6 +58,8 @@ const I = {
   home: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5L12 3l9 7.5V20a1 1 0 0 1-1 1h-5v-6H9v6H4a1 1 0 0 1-1-1z"/></svg>',
   chart: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>',
   cash: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="2" y="6" width="20" height="12" rx="2"/><circle cx="12" cy="12" r="2.5"/><path d="M6 12h.01M18 12h.01"/></svg>',
+  chat: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>',
+  check: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6L9 17l-5-5"/></svg>',
   share: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><path d="M8.6 13.5l6.8 4M15.4 6.5l-6.8 4"/></svg>',
 };
 
@@ -130,6 +132,7 @@ const routes = [
   [/^#\/customers$/, () => viewCustomers(null), null],
   [/^#\/customers\/(\d+)$/, (m) => viewCustomers(+m[1]), null],
   [/^#\/more$/, viewMore, null],
+  [/^#\/templates$/, viewTemplates, null],
   [/^#\/today$/, viewToday, null],
   [/^#\/reports$/, viewReports, 'orders'],
   [/^#\/cash$/, viewCash, 'orders'],
@@ -183,6 +186,7 @@ function navItems() {
   if (can('orders')) items.push(['#/lookup', 'Tra cứu hàng về', I.box, 'Hàng về', state.waitingCount]);
   if (can('orders') || can('quotes')) items.push(['#/orders', 'Đơn hàng', I.list, 'Đơn']);
   if (can('orders') || can('quotes')) items.push(['#/customers', 'Khách hàng', I.person, 'Khách']);
+  if (can('orders') || can('quotes')) items.push(['#/templates', 'Tin nhắn mẫu', I.chat, 'Tin nhắn']);
   if (can('orders')) items.push(['#/reports', 'Báo cáo lãi', I.chart, 'Báo cáo']);
   if (can('orders')) items.push(['#/cash', 'Thu tiền & đối soát', I.cash, 'Thu tiền']);
   if (can('settings')) items.push(['#/settings', 'Cài đặt', I.gear, 'Cài đặt']);
@@ -206,7 +210,7 @@ function shell(content) {
     </aside>
     <main class="main">${banner}<div id="view">${content}</div></main>
     <nav class="bnav">${nav.slice(0, 4).map(([h, , ic, s, b]) => `<a href="${h}" class="${active(h)}">${ic}<span>${s}</span>${b ? `<span class="badge">${b}</span>` : ''}</a>`).join('')}
-      <a href="#/more" class="${['#/more', '#/account', '#/settings', '#/users', '#/orders', '#/reports', '#/cash'].includes(hash) || hash.startsWith('#/customers') ? 'on' : ''}">${I.more}<span>Thêm</span></a></nav>
+      <a href="#/more" class="${['#/more', '#/account', '#/settings', '#/users', '#/orders', '#/reports', '#/cash', '#/templates'].includes(hash) || hash.startsWith('#/customers') ? 'on' : ''}">${I.more}<span>Thêm</span></a></nav>
   </div>`;
   $app.querySelectorAll('[data-logout]').forEach((a) => a.addEventListener('click', async (e) => {
     e.preventDefault();
@@ -1666,6 +1670,75 @@ async function viewCash() {
     view.querySelectorAll('[data-day]').forEach((tr) => tr.onclick = () => { date = tr.dataset.day; load(); });
   };
   await load().catch((e) => toast(e.message, 'err'));
+}
+
+// ---------------- message templates ----------------
+async function copyText(text, btn) {
+  try {
+    await navigator.clipboard.writeText(text);
+  } catch (_) {
+    const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); } catch (__) {}
+    ta.remove();
+  }
+  if (btn) {
+    const old = btn.innerHTML; btn.innerHTML = I.check; btn.classList.add('done');
+    setTimeout(() => { btn.innerHTML = old; btn.classList.remove('done'); }, 1400);
+  }
+  toast('Đã copy — dán vào WhatsApp', 'ok', 1800);
+}
+async function viewTemplates() {
+  const view = shell('');
+  if (!state.settings) state.settings = await api('GET', '/settings');
+  let list = JSON.parse(JSON.stringify(state.settings.templates || []));
+  let editing = false;
+  const groups = () => [...new Set(list.map((t) => t.group || 'Khác'))];
+  const render = () => {
+    view.innerHTML = `
+      <div class="page-h"><h1>Tin nhắn mẫu <small>bấm biểu tượng copy rồi dán vào WhatsApp</small></h1>
+        <div style="display:flex;gap:8px">${editing ? '<button class="btn" id="tp-cancel">Huỷ</button><button class="btn p" id="tp-save">Lưu thay đổi</button>' : '<button class="btn" id="tp-edit">✎ Sửa / thêm câu</button>'}</div></div>
+      ${editing ? editHtml() : viewHtml()}`;
+    bind();
+  };
+  const viewHtml = () => groups().map((g) => {
+    const ts = list.filter((t) => (t.group || 'Khác') === g);
+    return `<section class="tp-group"><div class="tp-gh"><h3>${esc(g)}</h3>${ts.length > 1 ? `<button class="btn sm" data-copy-group="${esc(g)}">${I.copy} Copy cả nhóm</button>` : ''}</div>
+      ${ts.map((t) => `<div class="card tp"><div class="tp-body">${t.title ? `<div class="tp-title">${esc(t.title)}</div>` : ''}<div class="tp-text">${esc(t.text).replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>')}</div></div>
+        <button class="tp-copy" data-copy="${esc(t.id)}" title="Copy">${I.copy}</button></div>`).join('')}</section>`;
+  }).join('') || '<div class="empty card">Chưa có tin nhắn mẫu. Bấm “Sửa / thêm câu”.</div>';
+  const editHtml = () => `<div class="grid">${list.map((t, i) => `<div class="card pad tp-edit" data-i="${i}">
+      <div class="form-grid"><div><label class="l">Nhóm</label><input class="in" data-k="group" list="tp-groups" value="${esc(t.group || '')}"></div>
+      <div><label class="l">Tiêu đề (chỉ mình thấy)</label><input class="in" data-k="title" value="${esc(t.title || '')}"></div></div>
+      <div style="margin-top:8px"><label class="l">Nội dung gửi khách</label><textarea class="in" data-k="text" rows="3">${esc(t.text || '')}</textarea></div>
+      <div style="display:flex;gap:6px;margin-top:8px;justify-content:flex-end"><button class="btn sm" data-mv="-1" ${i === 0 ? 'disabled' : ''}>↑</button><button class="btn sm" data-mv="1" ${i === list.length - 1 ? 'disabled' : ''}>↓</button><button class="btn sm danger" data-del>Xoá</button></div>
+    </div>`).join('')}
+    <button class="btn" id="tp-add" style="justify-self:start">+ Thêm câu mới</button>
+    <datalist id="tp-groups">${groups().map((g) => `<option value="${esc(g)}">`).join('')}</datalist></div>`;
+  const readEdits = () => {
+    view.querySelectorAll('.tp-edit').forEach((card) => {
+      const t = list[+card.dataset.i];
+      card.querySelectorAll('[data-k]').forEach((el) => { t[el.dataset.k] = el.value; });
+    });
+  };
+  const bind = () => {
+    const e = view.querySelector('#tp-edit'); if (e) e.onclick = () => { editing = true; render(); };
+    const c = view.querySelector('#tp-cancel'); if (c) c.onclick = () => { list = JSON.parse(JSON.stringify(state.settings.templates || [])); editing = false; render(); };
+    const sv = view.querySelector('#tp-save');
+    if (sv) sv.onclick = async () => {
+      readEdits();
+      try {
+        const r = await api('PUT', '/templates', { templates: list });
+        state.settings.templates = r.templates; list = JSON.parse(JSON.stringify(r.templates)); editing = false; render(); toast('Đã lưu tin nhắn mẫu', 'ok');
+      } catch (x) { toast(x.message, 'err'); }
+    };
+    const add = view.querySelector('#tp-add');
+    if (add) add.onclick = () => { readEdits(); list.push({ id: 't' + Date.now().toString(36), group: list.length ? list[list.length - 1].group : 'Khác', title: '', text: '' }); render(); const ta = view.querySelectorAll('textarea'); ta[ta.length - 1].focus(); };
+    view.querySelectorAll('[data-del]').forEach((b) => { b.onclick = () => { readEdits(); list.splice(+b.closest('.tp-edit').dataset.i, 1); render(); }; });
+    view.querySelectorAll('[data-mv]').forEach((b) => { b.onclick = () => { readEdits(); const i = +b.closest('.tp-edit').dataset.i, j = i + +b.dataset.mv; [list[i], list[j]] = [list[j], list[i]]; render(); }; });
+    view.querySelectorAll('[data-copy]').forEach((b) => { b.onclick = () => { const t = list.find((x) => x.id === b.dataset.copy); if (t) copyText(t.text, b); }; });
+    view.querySelectorAll('[data-copy-group]').forEach((b) => { b.onclick = () => copyText(list.filter((t) => (t.group || 'Khác') === b.dataset.copyGroup).map((t) => t.text).join('\n\n'), null); });
+  };
+  render();
 }
 
 // ---------------- more (mobile menu) ----------------

@@ -3,7 +3,7 @@ import { SCHEMA, MIGRATIONS, SCHEMA_VERSION, DEFAULT_SETTINGS } from './schema.j
 import { DEMO_COUNT, planDemoCustomer, shiftDate } from './demo.js';
 import { renderPublicQuote, renderNotFound } from './public-quote.js';
 
-export const APP_VERSION = '0.6.3';
+export const APP_VERSION = '0.7.0';
 
 const PERMS = ['quotes', 'orders', 'settings', 'users'];
 const STATUSES = ['quoted', 'paid', 'ordered', 'arrived', 'received', 'cancelled', 'returned'];
@@ -163,6 +163,7 @@ async function getSettings(env) {
         for (const p of Object.keys(out.fees)) if (v[p]) out.fees[p] = { ...out.fees[p], ...v[p] };
       } else if (r.key === 'shop') out.shop = { ...out.shop, ...v };
       else if (r.key === 'reminders') out.reminders = { ...out.reminders, ...v };
+      else if (r.key === 'templates' && Array.isArray(v)) out.templates = v;
     } catch (_) { /* ignore corrupt value */ }
   }
   return out;
@@ -283,6 +284,9 @@ async function handleApi(request, env, url) {
     if (seg.length === 2 && method === 'GET') return getCustomer(env, int(seg[1]));
     if (seg.length === 2 && method === 'PUT') return updateCustomer(request, env, int(seg[1]));
   }
+
+  // message templates (anyone working with customers can edit)
+  if (path === '/api/templates' && method === 'PUT') { needAny(user, ['quotes', 'orders']); return saveTemplates(request, env); }
 
   // auto translate product titles (Workers AI)
   if (path === '/api/translate' && method === 'POST') { need(user, 'quotes'); return translate(request, env); }
@@ -500,6 +504,20 @@ async function updateCustomer(request, env, id) {
     if (its.length) await env.DB.batch(its.map((it) => env.DB.prepare('UPDATE items SET search = ? WHERE id = ?').bind(itemSearch(it, name, phone, it.code), it.id)));
   }
   return getCustomer(env, id);
+}
+
+// ---------- message templates ----------
+async function saveTemplates(request, env) {
+  const b = await readJson(request);
+  if (!Array.isArray(b.templates)) throw bad('Dữ liệu không hợp lệ');
+  const list = b.templates.slice(0, 100).map((t, i) => ({
+    id: str(t.id, 20) || 't' + Date.now().toString(36) + i,
+    group: str(t.group, 60) || 'Khác',
+    title: str(t.title, 80),
+    text: String(t.text == null ? '' : t.text).slice(0, 2000),
+  })).filter((t) => t.text.trim());
+  await env.DB.prepare('INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)').bind('templates', JSON.stringify(list)).run();
+  return json({ templates: list });
 }
 
 // ---------- translate (Vietnamese product title -> short English name) ----------

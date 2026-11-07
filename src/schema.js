@@ -160,6 +160,14 @@ export const DEFAULT_SETTINGS = {
     other: { first: 35000, add: 15000, ship: 0, ret: 15000 },
   },
   reminders: { unpaid_days: 2, order_days: 7, pickup_days: 3 },
+  templates: [
+    { id: 't1', group: 'Khách mới hỏi', title: 'Chào & cảm ơn', text: "Hi there, welcome to An Thuong Order and thank you for reaching out! We're happy to help you shop online in Vietnam." },
+    { id: 't2', group: 'Khách mới hỏi', title: 'Cách hoạt động', text: 'You can see how our service works here: https://anthuongorder.com/#how' },
+    { id: 't3', group: 'Khách mới hỏi', title: 'Phí dịch vụ', text: 'Our service fees are listed here: https://anthuongorder.com/#service-fee' },
+    { id: 't4', group: 'Khách mới hỏi', title: 'Gửi link / mô tả sản phẩm', text: "Just send us the Shopee or Lazada link right here in this chat, or describe the product you're looking for. We'll check it and send you a quote." },
+    { id: 't5', group: 'Thanh toán & nhận hàng', title: 'Cách thanh toán', text: 'You can pay in cash at our coffee shop, Linz Coffee - 42 An Thuong 2, or by bank transfer via Wise / QR.' },
+    { id: 't6', group: 'Thanh toán & nhận hàng', title: 'Khi tới quán', text: 'When you come to the coffee shop, just tell them your name first. The coffee guy will know!' },
+  ],
   shop: {
     name: 'AN THUONG ORDER',
     tagline: 'Your local shopping assistant · Linz Coffee, 42 An Thuong 2',
