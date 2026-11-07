@@ -21,5 +21,7 @@
   ],
   // Bật sau khi tên miền anthuongorder.com đã ở trên Cloudflare:
   // "routes": [{ "pattern": "app.anthuongorder.com", "custom_domain": true }],
+  // Workers AI: dịch tự động tên sản phẩm tiếng Việt -> tiếng Anh
+  "ai": { "binding": "AI" },
   "observability": { "enabled": true }
 }

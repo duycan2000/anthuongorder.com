@@ -1,6 +1,6 @@
 {
   "name": "anthuongorder-app",
-  "version": "0.5.5",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
   "description": "An Thuong Order — internal quote & order app (Cloudflare Workers + D1)",

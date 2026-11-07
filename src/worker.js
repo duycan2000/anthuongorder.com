@@ -3,7 +3,7 @@ import { SCHEMA, MIGRATIONS, SCHEMA_VERSION, DEFAULT_SETTINGS } from './schema.j
 import { DEMO_COUNT, planDemoCustomer, shiftDate } from './demo.js';
 import { renderPublicQuote, renderNotFound } from './public-quote.js';
 
-export const APP_VERSION = '0.5.5';
+export const APP_VERSION = '0.6.0';
 
 const PERMS = ['quotes', 'orders', 'settings', 'users'];
 const STATUSES = ['quoted', 'paid', 'ordered', 'arrived', 'received', 'cancelled', 'returned'];
@@ -273,6 +273,9 @@ async function handleApi(request, env, url) {
     if (seg.length === 2 && method === 'PUT') return updateCustomer(request, env, int(seg[1]));
   }
 
+  // auto translate product titles (Workers AI)
+  if (path === '/api/translate' && method === 'POST') { need(user, 'quotes'); return translate(request, env); }
+
   // dashboard, reports, cash
   if (path === '/api/today' && method === 'GET') { needAny(user, ['quotes', 'orders']); return todayBoard(env); }
   if (path === '/api/reports' && method === 'GET') { need(user, 'orders'); return reports(env, url); }
@@ -486,6 +489,31 @@ async function updateCustomer(request, env, id) {
     if (its.length) await env.DB.batch(its.map((it) => env.DB.prepare('UPDATE items SET search = ? WHERE id = ?').bind(itemSearch(it, name, phone, it.code), it.id)));
   }
   return getCustomer(env, id);
+}
+
+// ---------- translate (Vietnamese product title -> short English name) ----------
+const TRANSLATE_PROMPT = 'You translate Vietnamese e-commerce (Shopee/Lazada) product titles into short, natural English product names for foreign customers. Keep brand names, model numbers, sizes and quantities. Drop marketing words, emojis, hashtags, shop names, promotions and bracketed tags like [HÀNG CHÍNH HÃNG]. At most 14 words. Reply with the English product name only, no quotes, no explanation.';
+async function translate(request, env) {
+  const b = await readJson(request);
+  const text = str(b.text, 600);
+  if (!text) throw bad('Chưa có tên tiếng Việt để dịch');
+  if (!env.AI) throw new HttpError(501, 'Chưa bật Workers AI cho app');
+  let out = '';
+  try {
+    const r = await env.AI.run('@cf/meta/llama-3.1-8b-instruct', {
+      messages: [{ role: 'system', content: TRANSLATE_PROMPT }, { role: 'user', content: text }],
+      max_tokens: 60, temperature: 0.2,
+    });
+    out = (r && r.response) || '';
+  } catch (_) { /* fall back below */ }
+  if (!out.trim()) {
+    const r = await env.AI.run('@cf/meta/m2m100-1.2b', { text, source_lang: 'vietnamese', target_lang: 'english' });
+    out = (r && r.translated_text) || '';
+  }
+  out = out.split('\n').map((l) => l.trim()).find(Boolean) || '';
+  out = out.replace(/^(english( name)?|translation)\s*:\s*/i, '').replace(/^["'“”]+|["'“”.]+$/g, '').trim().slice(0, 200);
+  if (!out) throw new HttpError(502, 'Không dịch được, thử lại');
+  return json({ text: out });
 }
 
 // ---------- returns / refunds ----------

@@ -213,6 +213,7 @@ table.t tr.sel td{background:var(--gll)}
 .row-it .tot-box{display:flex;align-items:center;justify-content:flex-end;background:#F3F6F4;font-weight:800;border-color:transparent}
 .row-it .f-tot .tot-box{background:var(--gl);color:var(--g)}
 .row-it .in.auto{background:var(--gll);color:var(--g);font-weight:600}
+.row-it .in.auto-tr{background:#F5F8FF;border-color:#C9D6F5}
 .row-it .fee-wrap .reset{position:absolute;right:4px;bottom:8px;border:0;background:none;color:var(--mut);cursor:pointer;font-size:13px;padding:2px 4px}
 .row-it .sec-track{background:#F8FAF9;margin:6px -16px -14px;padding:10px 16px 12px;border-top:1px solid var(--line2)}
 

@@ -1,7 +1,7 @@
 // An Thuong Order — internal app (vanilla JS SPA)
 import { renderQuoteImages, ensureFonts, canvasToBlob } from './quote-image.js';
 
-const CLIENT_VERSION = '0.5.5';
+const CLIENT_VERSION = '0.6.0';
 const NATIVE = typeof window.AndroidBridge !== 'undefined'; // running inside the Android app
 const $app = document.getElementById('app');
 
@@ -416,10 +416,10 @@ async function viewQuote(id) {
         <div class="sec-b">
           <div class="g2">
             <div class="f"><label>Link sản phẩm</label><input class="in" data-f="link" placeholder="Dán link Shopee / Lazada…" value="${esc(it.link)}"></div>
-            <div class="f"><label>Tên gốc tiếng Việt <span class="hint">tự lấy từ link nếu có</span></label><div class="with-btn"><input class="in" data-f="name_vi" placeholder="Tên trên Shopee" value="${esc(it.name_vi)}"><button class="btn sm" type="button" data-act="translate" title="Mở Google Dịch sang tiếng Anh">Dịch ↗</button></div></div>
+            <div class="f"><label>Tên gốc tiếng Việt <span class="hint">tự lấy từ link nếu có</span></label><div class="with-btn"><input class="in" data-f="name_vi" placeholder="Tên trên Shopee" value="${esc(it.name_vi)}"><button class="btn sm" type="button" data-act="translate" title="Dịch sang tiếng Anh (Workers AI)">Dịch</button></div></div>
           </div>
           <div class="g3">
-            <div class="f"><label>Tên tiếng Anh <span class="hint">in trên ảnh gửi khách</span></label><input class="in" data-f="name" placeholder="Product name in English" value="${esc(it.name)}"></div>
+            <div class="f"><label>Tên tiếng Anh <span class="hint" data-auto>${it._auto ? '· dịch tự động, sửa được' : 'in trên ảnh gửi khách'}</span></label><input class="in ${it._auto ? 'auto-tr' : ''}" data-f="name" placeholder="Tự dịch khi có tên tiếng Việt" value="${esc(it.name)}"></div>
             <div class="f"><label>Phân loại 1</label><input class="in" data-f="variation" placeholder="Màu, kiểu…" value="${esc(it.variation)}"></div>
             <div class="f"><label>Phân loại 2</label><input class="in" data-f="variation2" placeholder="Size, dung tích…" value="${esc(it.variation2 || '')}"></div>
           </div>
@@ -684,14 +684,18 @@ async function viewQuote(id) {
         if (def && !it.shipping) { it.shipping = def.ship || 0; row.querySelector('[data-f="shipping"]').value = money(it.shipping); }
       }
       const guess = nameFromLink(it.link);
-      if (guess && !it.name_vi) { it.name_vi = guess; row.querySelector('[data-f="name_vi"]').value = guess; }
+      if (guess && !it.name_vi) { it.name_vi = guess; row.querySelector('[data-f="name_vi"]').value = guess; scheduleTranslate(i); }
     } else if (['qty', 'unit_price', 'shipping', 'fee', 'cost'].includes(f)) {
       const v = f === 'qty' ? Math.max(1, parseInt(e.target.value.replace(/\D/g, ''), 10) || 1) : parseMoney(e.target.value);
       if (f === 'cost') it.cost = e.target.value.trim() === '' ? null : v; else it[f] = v;
       if (f === 'fee') {
         if (!it.fee_manual) { it.fee_manual = 1; e.target.classList.remove('auto'); }
       }
-    } else it[f] = e.target.value;
+    } else {
+      it[f] = e.target.value;
+      if (f === 'name_vi' && (!it.name || it._auto)) scheduleTranslate(i);
+      if (f === 'name' && it._auto) { it._auto = false; e.target.classList.remove('auto-tr'); const h = e.target.closest('.f').querySelector('[data-auto]'); if (h) h.textContent = 'in trên ảnh gửi khách'; }
+    }
     updateComputed();
   });
   $rows.addEventListener('change', (e) => {
@@ -743,12 +747,45 @@ async function viewQuote(id) {
     } else if (act === 'fee-auto') {
       q.items[i].fee_manual = 0; dirty = true; renderRows();
     } else if (act === 'translate') {
-      const it = q.items[i];
-      const text = it.name_vi || it.name;
-      if (!text) { toast('Nhập tên tiếng Việt trước'); return; }
-      window.open('https://translate.google.com/?sl=vi&tl=en&op=translate&text=' + encodeURIComponent(text), '_blank', 'noopener');
+      translateItem(i, true);
     }
   });
+  // ---- auto translate (Workers AI) ----
+  const trTimers = new Map();
+  async function translateItem(i, force) {
+    const it = q.items[i]; if (!it) return;
+    const text = (it.name_vi || '').trim();
+    if (!text) { if (force) toast('Nhập tên tiếng Việt trước'); return; }
+    if (!force && it.name && !it._auto) return;
+    const row = $rows.querySelector(`.row-it[data-i="${i}"]`);
+    const btn = row && row.querySelector('[data-act="translate"]');
+    if (btn) { btn.disabled = true; btn.textContent = 'Đang dịch…'; }
+    try {
+      const r = await api('POST', '/translate', { text });
+      if (q.items[i] !== it) return;
+      if (!force && it.name && !it._auto) return; // user typed meanwhile
+      it.name = r.text; it._auto = true; dirty = true;
+      const cur = $rows.querySelector(`.row-it[data-i="${i}"]`);
+      if (cur) {
+        const inp = cur.querySelector('[data-f="name"]');
+        if (inp && document.activeElement !== inp) { inp.value = r.text; inp.classList.add('auto-tr'); }
+        const h = cur.querySelector('[data-auto]'); if (h) h.textContent = '· dịch tự động, sửa được';
+      }
+      updateComputed();
+    } catch (e) {
+      if (force) {
+        toast(esc(e.message) + ' — mở Google Dịch', 'err');
+        window.open('https://translate.google.com/?sl=vi&tl=en&op=translate&text=' + encodeURIComponent(text), '_blank', 'noopener');
+      }
+    } finally {
+      const cur = $rows.querySelector(`.row-it[data-i="${i}"] [data-act="translate"]`);
+      if (cur) { cur.disabled = false; cur.textContent = 'Dịch'; }
+    }
+  }
+  function scheduleTranslate(i) {
+    clearTimeout(trTimers.get(i));
+    trTimers.set(i, setTimeout(() => translateItem(i, false), 700));
+  }
   function addItem() {
     const last = q.items[q.items.length - 1];
     if (q.items.length >= 3) q.items.forEach((x) => { x._open = false; });

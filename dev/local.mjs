@@ -43,7 +43,9 @@ const ASSETS = {
     }
   },
 };
-const env = { DB, ASSETS };
+// fake Workers AI for local testing
+const AI = { async run(model, input) { const t = input.messages ? input.messages[1].content : input.text; return model.includes('llama') ? { response: 'EN(' + t.slice(0, 40) + ')' } : { translated_text: t }; } };
+const env = { DB, ASSETS, AI };
 const port = +(process.argv[2] || 8787);
 http.createServer(async (req, res) => {
   const chunks = [];
