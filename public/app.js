@@ -1,7 +1,7 @@
 // An Thuong Order — internal app (vanilla JS SPA)
 import { renderQuoteImages, ensureFonts, canvasToBlob } from './quote-image.js';
 
-const CLIENT_VERSION = '0.5.0';
+const CLIENT_VERSION = '0.5.1';
 const NATIVE = typeof window.AndroidBridge !== 'undefined'; // running inside the Android app
 const $app = document.getElementById('app');
 
@@ -428,7 +428,7 @@ async function viewQuote(id) {
       <div class="sec sec-price">
         <div class="sec-l">Giá</div>
         <div class="sec-b calc">
-          <div class="f f-qty"><label>Số lượng</label><input class="in money" data-f="qty" inputmode="numeric" value="${it.qty}"></div>
+          <div class="f f-qty"><label>Số lượng</label><div class="stepper"><button type="button" class="st-btn" data-act="qty-dec" title="Giảm" ${it.qty <= 1 ? 'disabled' : ''}>−</button><input class="in" data-f="qty" inputmode="numeric" value="${it.qty}"><button type="button" class="st-btn" data-act="qty-inc" title="Tăng">+</button></div></div>
           <span class="op">×</span>
           <div class="f"><label>Giá sản phẩm <span class="hint">1 cái</span></label><input class="in money" data-f="unit_price" inputmode="numeric" placeholder="0" value="${it.unit_price ? money(it.unit_price) : ''}"></div>
           <span class="op">+</span>
@@ -728,6 +728,13 @@ async function viewQuote(id) {
     } else if (act === 'dup') {
       const c = { ...q.items[i], id: null, status: null, platform_order_id: '', cost: null, shelf: '', variation: '', variation2: '', _open: true, purchase_id: null };
       q.items.splice(i + 1, 0, c); dirty = true; renderRows(i + 1, 'variation');
+    } else if (act === 'qty-inc' || act === 'qty-dec') {
+      const it = q.items[i];
+      it.qty = Math.max(1, Math.min(999, it.qty + (act === 'qty-inc' ? 1 : -1)));
+      const row = b.closest('.row-it');
+      row.querySelector('[data-f="qty"]').value = it.qty;
+      row.querySelector('[data-act="qty-dec"]').disabled = it.qty <= 1;
+      dirty = true; updateComputed();
     } else if (act === 'toggle') {
       q.items[i]._open = q.items[i]._open === false;
       renderRows(q.items[i]._open ? i : null, 'name');
@@ -799,6 +806,29 @@ async function viewQuote(id) {
       toast('Trình duyệt không cho copy ảnh — đã tải ảnh xuống');
     }
   }
+  function shortMessage() {
+    return `Here is your quote. Your total amount is: ${money(totalsOf(q).g)} ₫`;
+  }
+  async function copyImageAndMessage() {
+    const blobP = (async () => { if (dirty || !q.id) await save(true); else await doPreview(); return canvasToBlob(canvases[0]); })();
+    const msg = shortMessage();
+    const copyText = () => navigator.clipboard.writeText(shortMessage()).then(() => toast('Đã copy tin nhắn. Dán vào ô chat (Ctrl+V)', 'ok')).catch(() => toast(shortMessage()));
+    try {
+      if (!navigator.clipboard || !window.ClipboardItem) throw new Error('clipboard');
+      try {
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blobP, 'text/plain': new Blob([msg], { type: 'text/plain' }) })]);
+      } catch (_) {
+        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blobP })]);
+      }
+      const t = toast(`Đã copy ảnh${canvases.length > 1 ? ' 1/' + canvases.length : ''} + tin nhắn. Dán ảnh vào WhatsApp (Ctrl+V), rồi <a href="#" data-cpmsg>copy tin nhắn</a> để dán tiếp.`, 'ok', 12000);
+      const a = t.querySelector('[data-cpmsg]');
+      if (a) a.onclick = (e) => { e.preventDefault(); copyText(); t.remove(); };
+    } catch (_) {
+      await blobP.catch(() => {});
+      downloadImage(0);
+      copyText();
+    }
+  }
   function downloadImage(idx = 0) {
     const cv = canvases[idx]; if (!cv) return;
     if (NATIVE) { window.AndroidBridge.saveImage(cv.toDataURL('image/png'), `${q.code || 'quote'}${canvases.length > 1 ? `-${idx + 1}` : ''}.png`); return; }
@@ -826,6 +856,7 @@ async function viewQuote(id) {
       <button class="btn" id="b-save">Lưu <span class="kbd">Ctrl+S</span></button>
       <button class="btn" id="b-dl">${I.dl} Tải ảnh</button>
       ${NATIVE ? `<button class="btn" id="b-share">${I.share} Chia sẻ</button><button class="btn wa" id="b-nwa">${I.wa} Gửi ảnh qua WhatsApp</button>` : mobile && navigator.share ? `<button class="btn wa" id="b-share">${I.share} Chia sẻ ảnh</button>` : `<button class="btn p" id="b-copy">${I.copy} Copy ảnh</button>
+      <button class="btn p" id="b-copymsg" title="Copy ảnh, kèm tin nhắn: Here is your quote. Your total amount is: …">${I.copy} Copy ảnh + tin nhắn</button>
       <button class="btn wa" id="b-wa">${I.wa} Copy ảnh + WhatsApp</button>`}` : '';
     const share = view.querySelector('#share');
     if (q.public_id) {
@@ -847,6 +878,7 @@ async function viewQuote(id) {
     el.querySelector('#b-save').onclick = () => save().catch(() => {});
     el.querySelector('#b-dl').onclick = async () => { if (dirty || !q.id) await save(true); canvases.forEach((_, i) => downloadImage(i)); };
     const bc = el.querySelector('#b-copy'); if (bc) bc.onclick = () => copyImage(0);
+    const bcm = el.querySelector('#b-copymsg'); if (bcm) bcm.onclick = () => copyImageAndMessage();
     const bw = el.querySelector('#b-wa');
     if (bw) bw.onclick = () => {
       const win = window.open('about:blank', '_blank');
