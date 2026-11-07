@@ -13,6 +13,7 @@ const STATUS = {
   cancelled: { label: 'Cancelled', cls: 's-cancelled' },
   returned: { label: 'Returned', cls: 's-cancelled' },
 };
+const PER_PAGE = 5;
 const STAGES = ['quoted', 'paid', 'ordered', 'arrived', 'received'];
 const STAGE_LABEL = ['Quote', 'Paid', 'Ordered', 'Arrived', 'Picked up'];
 
@@ -80,6 +81,8 @@ h2{font-size:13px;letter-spacing:1.2px;text-transform:uppercase;color:var(--mut)
 .tot{padding:16px 18px}
 .tot .r{display:flex;justify-content:space-between;padding:4px 0;font-variant-numeric:tabular-nums}
 .tot .r span:first-child{color:#3d4a45}
+.tot .r{gap:10px}
+.tot .r span:last-child{white-space:nowrap}
 .tot .r em{font-style:normal;color:var(--mut);font-size:12.5px}
 .grand{display:flex;justify-content:space-between;align-items:baseline;background:var(--gl);border-top:3px solid var(--g);padding:16px 18px;color:var(--g)}
 .grand span{font-weight:800;letter-spacing:.5px}
@@ -93,6 +96,17 @@ h2{font-size:13px;letter-spacing:1.2px;text-transform:uppercase;color:var(--mut)
 .note{padding:14px 16px;font-size:14px;color:#3d4a45;background:#FFFBF2;border-left:4px solid #E5A93B}
 .btn{display:flex;align-items:center;justify-content:center;gap:8px;width:100%;margin-top:16px;padding:15px;border-radius:14px;background:#25D366;color:#fff;font-weight:800;text-decoration:none;font-size:16px;box-shadow:0 6px 16px rgba(37,211,102,.28)}
 .btn.sec{background:#fff;color:var(--g);box-shadow:none;border:1.5px solid var(--line);margin-top:10px;font-weight:700}
+.paged.js .it{display:none}
+.paged.js .it.show{display:block}
+.paged.js .it.show{border-top:1px solid var(--line)}
+.paged.js .it.show.pfirst{border-top:0}
+.pager{display:flex;align-items:center;justify-content:center;gap:8px;margin-top:14px;flex-wrap:wrap}
+.pg-nums{display:flex;gap:6px;flex-wrap:wrap;justify-content:center}
+.pager button{font:inherit;cursor:pointer;border:1.5px solid var(--g);background:#fff;color:var(--g);font-weight:800;border-radius:12px;min-width:44px;height:44px;padding:0 14px;font-size:15px}
+.pager .pg-num.on{background:var(--g);color:#fff;box-shadow:0 4px 12px rgba(46,94,78,.3)}
+.pager .pg-nav{background:var(--g);color:#fff}
+.pager button:disabled{opacity:.35;cursor:default;background:#fff;color:var(--g)}
+.pg-info{text-align:center;color:var(--mut);font-size:13px;margin-top:8px}
 .foot{text-align:center;color:var(--mut);font-size:12px;margin-top:22px}
 @media (min-width:600px){.top{padding-top:30px}.cust{font-size:28px}}
 `;
@@ -120,7 +134,7 @@ export function renderPublicQuote({ order, items, settings, url, returns = [] })
     const st = STATUS[it.status] || STATUS.quoted;
     const off = ['cancelled', 'returned'].includes(it.status);
     const link = safeLink(it.link);
-    return `<div class="it ${off ? 'off' : ''}">
+    return `<div class="it ${off ? 'off' : ''}" data-page="${Math.floor(idx / PER_PAGE) + 1}">
       <div class="nm">${idx + 1}. ${esc(it.name || it.name_vi || 'Item')}</div>
       ${it.variation || it.variation2 ? `<div class="vr">${esc([it.variation, it.variation2].filter(Boolean).join(', '))}</div>` : ''}
       <div class="meta"><span class="pill p-${esc(it.platform)}">${esc(PLATFORM[it.platform] || 'Online')}</span>
@@ -163,8 +177,17 @@ export function renderPublicQuote({ order, items, settings, url, returns = [] })
     <div class="sum">${esc(summary)}</div>
   </section>
 
-  <h2>Items (${items.length})</h2>
-  <section class="card">${rows}</section>
+  <h2 id="items">Items (${items.length})</h2>
+  <section class="card ${items.length > PER_PAGE ? 'paged' : ''}" id="item-list">${rows}</section>
+  ${items.length > PER_PAGE ? (() => {
+    const pages = Math.ceil(items.length / PER_PAGE);
+    return `<nav class="pager" id="pager" aria-label="Item pages">
+      <button type="button" class="pg-nav" data-go="prev" aria-label="Previous page">‹ Prev</button>
+      <span class="pg-nums">${Array.from({ length: pages }, (_, k) => `<button type="button" class="pg-num" data-go="${k + 1}">${k + 1}</button>`).join('')}</span>
+      <button type="button" class="pg-nav" data-go="next" aria-label="Next page">Next ›</button>
+    </nav>
+    <div class="pg-info" id="pg-info"></div>`;
+  })() : ''}
   ${order.note ? `<section class="card note">${esc(order.note)}</section>` : ''}
 
   <section class="card">
@@ -189,7 +212,38 @@ export function renderPublicQuote({ order, items, settings, url, returns = [] })
   ${wa ? `<a class="btn" href="https://wa.me/${wa}?text=${waText}" target="_blank" rel="noopener">Message us on WhatsApp</a>` : ''}
   <a class="btn sec" href="${esc(mapUrl)}" target="_blank" rel="noopener">Find us · ${esc((shop.address || '').split(',')[0] || 'Linz Coffee')}</a>
   <div class="foot">${esc(shop.name || 'An Thuong Order')} · anthuongorder.com</div>
-</main></body></html>`;
+</main>
+${items.length > PER_PAGE ? `<script>
+(function () {
+  var list = document.getElementById('item-list'), pager = document.getElementById('pager'), info = document.getElementById('pg-info');
+  var rows = list.querySelectorAll('.it'), per = ${PER_PAGE}, pages = Math.ceil(rows.length / per), cur = 1;
+  function show(p, scroll) {
+    cur = Math.max(1, Math.min(pages, p));
+    var first = true;
+    for (var i = 0; i < rows.length; i++) {
+      var on = +rows[i].getAttribute('data-page') === cur;
+      rows[i].classList.toggle('show', on);
+      rows[i].classList.toggle('pfirst', on && first);
+      if (on) first = false;
+    }
+    var nums = pager.querySelectorAll('.pg-num');
+    for (var j = 0; j < nums.length; j++) nums[j].classList.toggle('on', j + 1 === cur);
+    pager.querySelector('[data-go=prev]').disabled = cur === 1;
+    pager.querySelector('[data-go=next]').disabled = cur === pages;
+    var a = (cur - 1) * per + 1, b = Math.min(rows.length, cur * per);
+    info.textContent = 'Showing items ' + a + '–' + b + ' of ' + rows.length + ' · page ' + cur + ' of ' + pages;
+    if (scroll) document.getElementById('items').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  pager.addEventListener('click', function (e) {
+    var t = e.target.closest('[data-go]'); if (!t || t.disabled) return;
+    var g = t.getAttribute('data-go');
+    show(g === 'prev' ? cur - 1 : g === 'next' ? cur + 1 : +g, true);
+  });
+  list.classList.add('js');
+  show(1, false);
+})();
+</script>` : ''}
+</body></html>`;
 }
 
 export function renderNotFound() {
