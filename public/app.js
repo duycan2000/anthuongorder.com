@@ -1,7 +1,7 @@
 // An Thuong Order — internal app (vanilla JS SPA)
 import { renderQuoteImages, ensureFonts, canvasToBlob } from './quote-image.js';
 
-const CLIENT_VERSION = '0.5.2';
+const CLIENT_VERSION = '0.5.3';
 const NATIVE = typeof window.AndroidBridge !== 'undefined'; // running inside the Android app
 const $app = document.getElementById('app');
 
@@ -807,7 +807,7 @@ async function viewQuote(id) {
     }
   }
   function shortMessage() {
-    return `Here is your quote. Your total amount is: ${money(totalsOf(q).g)} ₫`;
+    return `Here is your quote. Your total amount is: ${money(totalsOf(q).g)} ₫\nCan you please check? Thank you`;
   }
   async function copyImageAndMessage() {
     const blobP = (async () => { if (dirty || !q.id) await save(true); else await doPreview(); return canvasToBlob(canvases[0]); })();
@@ -856,7 +856,7 @@ async function viewQuote(id) {
       <button class="btn" id="b-save">Lưu <span class="kbd">Ctrl+S</span></button>
       <button class="btn" id="b-dl">${I.dl} Tải ảnh</button>
       ${NATIVE ? `<button class="btn" id="b-share">${I.share} Chia sẻ</button><button class="btn wa" id="b-nwa">${I.wa} Gửi ảnh qua WhatsApp</button>` : mobile && navigator.share ? `<button class="btn wa" id="b-share">${I.share} Chia sẻ ảnh</button>` : `<button class="btn p" id="b-copy">${I.copy} Copy ảnh</button>
-      <button class="btn p" id="b-copymsg" title="Copy ảnh, kèm tin nhắn: Here is your quote. Your total amount is: …">${I.copy} Copy ảnh + tin nhắn</button>
+      <button class="btn p" id="b-copymsg" title="Copy tin nhắn: Here is your quote. Your total amount is: … / Can you please check? Thank you">${I.copy} Copy tin nhắn</button>
       <button class="btn wa" id="b-wa">${I.wa} Copy ảnh + WhatsApp</button>`}` : '';
     const share = view.querySelector('#share');
     if (q.public_id) {
@@ -878,7 +878,12 @@ async function viewQuote(id) {
     el.querySelector('#b-save').onclick = () => save().catch(() => {});
     el.querySelector('#b-dl').onclick = async () => { if (dirty || !q.id) await save(true); canvases.forEach((_, i) => downloadImage(i)); };
     const bc = el.querySelector('#b-copy'); if (bc) bc.onclick = () => copyImage(0);
-    const bcm = el.querySelector('#b-copymsg'); if (bcm) bcm.onclick = () => copyImageAndMessage();
+    const bcm = el.querySelector('#b-copymsg');
+    if (bcm) bcm.onclick = async () => {
+      const msg = shortMessage();
+      try { await navigator.clipboard.writeText(msg); toast('Đã copy tin nhắn. Dán vào WhatsApp (Ctrl+V)', 'ok'); }
+      catch (_) { toast(esc(msg).replace(/\n/g, '<br>'), '', 8000); }
+    };
     const bw = el.querySelector('#b-wa');
     if (bw) bw.onclick = () => {
       const win = window.open('about:blank', '_blank');
